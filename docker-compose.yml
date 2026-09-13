@@ -1,0 +1,50 @@
+services:
+  api:
+    build:
+      context: ./api
+    image: release-desk-api:latest
+    ports:
+      # 宿主端口可由 API_PORT 覆盖
+      - "${API_PORT:-8000}:8000"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=2).status==200 else 1)"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  web:
+    build:
+      context: ./web
+    image: release-desk-web:latest
+    ports:
+      # 宿主端口可由 WEB_PORT 覆盖
+      - "${WEB_PORT:-8080}:80"
+    depends_on:
+      api:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1/ || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # 一次性验收服务：docker compose --profile verify run --rm verify
+  # 对运行中的真实 Web/API 容器执行 pytest、Vitest、生产构建与 Playwright
+  verify:
+    profiles: ["verify"]
+    build:
+      context: .
+      dockerfile: verify/Dockerfile
+    image: release-desk-verify:latest
+    environment:
+      E2E_BASE_URL: http://web
+      PLAYWRIGHT_NO_SANDBOX: "1"
+      CI: "1"
+    depends_on:
+      api:
+        condition: service_healthy
+      web:
+        condition: service_healthy
+    restart: "no"

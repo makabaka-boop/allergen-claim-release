@@ -1,0 +1,26 @@
+# 依赖与虚拟环境
+node_modules/
+**/node_modules/
+.venv/
+**/.venv/
+
+# 构建/测试生成物
+dist/
+**/dist/
+__pycache__/
+**/__pycache__/
+*.pyc
+.pytest_cache/
+**/.pytest_cache/
+test-results/
+**/test-results/
+playwright-report/
+**/playwright-report/
+
+# 本地环境覆盖
+.env
+
+# 编辑器与系统文件
+.vscode/
+.idea/
+.DS_Store
