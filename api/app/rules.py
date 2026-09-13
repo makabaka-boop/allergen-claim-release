@@ -24,6 +24,14 @@ class Claim(StrEnum):
     GLUTEN_FREE = "gluten_free"
 
 
+class CompareStatus(StrEnum):
+    """单条声明在前后方案间的变化类别（固定三态）。"""
+
+    NEWLY_BLOCKED = "newly_blocked"  # 对照放行、现方案受阻
+    RESOLVED = "resolved"  # 对照受阻、现方案放行
+    UNCHANGED = "unchanged"  # 两侧结论一致
+
+
 # 原料行布尔字段 -> 目标项
 DIRECT_FIELD_TARGETS: dict[str, Target] = {
     "contains_milk": Target.MILK,

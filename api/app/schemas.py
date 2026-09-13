@@ -9,7 +9,7 @@ from typing import Annotated
 
 from pydantic import BaseModel, Field, StringConstraints, field_validator
 
-from .rules import Claim, Target
+from .rules import Claim, CompareStatus, Target
 
 # 原料名非空纯字符串（去空白后至少 1 个字符）
 NonEmptyName = Annotated[str, StringConstraints(min_length=1, strip_whitespace=True)]
@@ -97,3 +97,35 @@ class ReleaseResponse(BaseModel):
     printable: bool = Field(..., description="所有请求声明均放行时为 true")
     rows: list[RowReport]
     verdicts: list[ClaimVerdict]
+
+
+class CompareRequest(BaseModel):
+    """前后方案影响比较请求：对照方案与现方案各自独立校验。
+
+    任一侧字段非法时，422 的 loc 会带上 baseline/current 前缀，
+    按对照或现方案路径精确定位，且不产生任何比较结果。
+    """
+
+    baseline: ReleaseRequest = Field(..., description="对照方案（已保存的快照）")
+    current: ReleaseRequest = Field(..., description="现方案（当前编辑内容）")
+
+
+class ClaimComparison(BaseModel):
+    """单条声明的前后对比：三态之一 + 只存在于一侧的阻断证据。"""
+
+    claim: Claim
+    status: CompareStatus
+    baseline_allowed: bool = Field(..., description="对照方案中该声明是否放行")
+    current_allowed: bool = Field(..., description="现方案中该声明是否放行")
+    new_blockers: list[Evidence] = Field(
+        default_factory=list, description="仅现方案存在的阻断证据"
+    )
+    resolved_blockers: list[Evidence] = Field(
+        default_factory=list, description="仅对照方案存在的阻断证据"
+    )
+
+
+class CompareResponse(BaseModel):
+    baseline: ReleaseResponse = Field(..., description="对照方案的完整裁决结果")
+    current: ReleaseResponse = Field(..., description="现方案的完整裁决结果")
+    comparisons: list[ClaimComparison]

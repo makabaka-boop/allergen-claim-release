@@ -11,6 +11,12 @@ const FIELD_NAMES: Record<string, string> = {
 };
 
 function humanizeField(field: string): string {
+  // 比较请求的 422 错误按方案路径定位：baseline.* / current.*
+  const planMatch = field.match(/^(baseline|current)\.(.+)$/);
+  if (planMatch) {
+    const plan = planMatch[1] === "baseline" ? "对照方案" : "现方案";
+    return `${plan}·${humanizeField(planMatch[2])}`;
+  }
   const rowMatch = field.match(/^ingredients\[(\d+)\](?:\.(.+))?$/);
   if (rowMatch) {
     const rowNumber = Number(rowMatch[1]) + 1;

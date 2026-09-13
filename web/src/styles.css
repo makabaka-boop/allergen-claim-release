@@ -136,10 +136,6 @@ button.danger {
   padding: 4px 10px;
 }
 
-.actions {
-  text-align: right;
-}
-
 .verdict-banner {
   font-size: 20px;
   font-weight: 700;
@@ -210,6 +206,33 @@ button.danger {
 .claim-verdict.block {
   border-left-color: var(--block-border);
   background: var(--block-bg);
+}
+
+.claim-verdict.neutral {
+  border-left-color: var(--muted);
+  background: #f4f6f8;
+}
+
+.compare-transition {
+  margin: 8px 0 0;
+  color: var(--muted);
+}
+
+.compare-evidence h3 {
+  margin: 10px 0 4px;
+  font-size: 14px;
+}
+
+.actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 12px;
+}
+
+.baseline-hint {
+  color: var(--muted);
+  margin: 8px 0 0;
+  text-align: right;
 }
 
 .claim-title {

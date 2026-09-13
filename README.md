@@ -97,6 +97,49 @@
 - `verdicts`：逐条声明给出 `allowed` 与阻断证据清单（行号、原料名、目标项、
   `source` 为 `direct` 直接成分或 `contact` 共线接触）。
 
+### 前后方案影响比较 `POST /api/compare`
+
+复核员替换原料或调整共线信息后，可比较改动对拟印刷声明的影响。页面先完成一次
+正常裁决并把当前配方与声明**设为对照**（快照深拷贝保存，后续编辑不会反向污染；
+未设对照时“比较改动”按钮不可用），编辑同一表格后点击“比较改动”：请求同时提交
+对照方案与现方案，后端对两侧**分别复用同一校验与裁决函数**，再按声明对比。
+
+```json
+{
+  "baseline": { "ingredients": [/* 对照方案配方行 */], "claims": ["gluten_free"] },
+  "current": { "ingredients": [/* 现方案配方行 */], "claims": ["gluten_free"] }
+}
+```
+
+响应（HTTP 200）：
+
+```json
+{
+  "baseline": { "printable": true, "rows": [], "verdicts": [] },
+  "current": { "printable": false, "rows": [], "verdicts": [] },
+  "comparisons": [
+    {
+      "claim": "gluten_free",
+      "status": "newly_blocked",
+      "baseline_allowed": true,
+      "current_allowed": false,
+      "new_blockers": [
+        { "row_index": 0, "ingredient_name": "燕麦粉", "target": "wheat", "source": "contact" }
+      ],
+      "resolved_blockers": []
+    }
+  ]
+}
+```
+
+- `baseline` / `current`：两侧各自的完整裁决结果（结构与 `/api/evaluate` 响应一致）。
+- `comparisons`：按声明给出三态之一——`newly_blocked`（新受阻）、`resolved`
+  （已解除）、`unchanged`（未变化）；`new_blockers` / `resolved_blockers` 为只存在于
+  一侧的阻断证据（按行号 + 目标项 + 来源求差集，原料改名不产生伪差异）。
+- 任一方案字段非法时同样返回 422 字段级错误，`loc` 以 `baseline` / `current`
+  前缀定位到对应方案（如 `body.current.ingredients.0.contact_wheat`），且不产生
+  任何比较结果；前端连接失败时保留对照快照与编辑内容，可直接重试。
+
 另有 `GET /health` 返回 `{"status":"ok"}`，供健康检查与验收使用。
 
 ## 用 Docker Compose 启动（推荐）
@@ -180,15 +223,16 @@ E2E_BASE_URL=http://localhost:5173 npx playwright test       # 本地 Vite 开�
 │   │   ├── rules.py     # 目标项/声明/麸质集合等固定规则（纯枚举与映射）
 │   │   ├── schemas.py   # Pydantic 模型与字段级校验（extra=forbid、枚举白名单）
 │   │   ├── evaluate.py  # 联合裁决：直接成分 + 共线接触
+│   │   ├── compare.py   # 前后方案比较：复用 evaluate，按声明三态对比证据差集
 │   │   └── main.py      # 路由、CORS、健康检查
-│   └── tests/           # pytest：规则矩阵 + HTTP 422 契约
+│   └── tests/           # pytest：规则矩阵 + HTTP 422 契约 + 前后方案比较
 ├── web/                 # React + Vite 前端
 │   ├── src/
 │   │   ├── types.ts            # 与后端一一对应的枚举、类型、空行工厂
 │   │   ├── api.ts              # 真实 fetch 调用与 422 字段错误映射
-│   │   ├── App.tsx             # 配方表 + 声明选择 + 提交 + 裁决呈现
-│   │   └── components/         # 配方表/声明选择/证据面板/字段错误
-│   ├── e2e/release.spec.ts     # Playwright 真实联调端到端
+│   │   ├── App.tsx             # 配方表 + 声明选择 + 提交 + 裁决呈现 + 对照快照/比较
+│   │   └── components/         # 配方表/声明选择/证据面板/比较面板/字段错误
+│   ├── e2e/*.spec.ts           # Playwright 真实联调端到端（裁决 + 前后方案比较）
 │   └── src/**/*.test.ts(x)     # Vitest
 ├── verify/              # 一次性验收镜像构建与执行脚本
 ├── docker-compose.yml

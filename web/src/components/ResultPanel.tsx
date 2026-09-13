@@ -1,7 +1,7 @@
 import { CLAIM_LABELS, TARGET_LABELS } from "../types";
 import type { Evidence, ReleaseResponse } from "../types";
 
-function formatEvidence(evidence: Evidence): string {
+export function formatEvidence(evidence: Evidence): string {
   const source = evidence.source === "direct" ? "直接成分" : "同组共线接触";
   return `第 ${evidence.row_index + 1} 行「${evidence.ingredient_name}」${source}命中${TARGET_LABELS[evidence.target]}`;
 }

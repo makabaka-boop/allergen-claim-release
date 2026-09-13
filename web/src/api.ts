@@ -1,4 +1,11 @@
-import type { Claim, FieldError, IngredientRow, ReleaseResponse } from "./types";
+import type {
+  Claim,
+  CompareResponse,
+  FieldError,
+  IngredientRow,
+  ReleasePlan,
+  ReleaseResponse,
+} from "./types";
 
 // 开发环境走 Vite 代理（同源）；容器内由 Nginx 同源反代到 API
 const API_BASE = import.meta.env.VITE_API_BASE ?? "";
@@ -41,28 +48,26 @@ function formatLocation(parts: (string | number)[]): string {
   return out;
 }
 
-export async function evaluateRelease(
-  ingredients: IngredientRow[],
-  claims: Claim[],
-): Promise<ReleaseResponse> {
+// 统一的 POST 调用：传输失败、422 字段级错误、其他 HTTP 错误的处理一致
+async function post<T>(path: string, payload: unknown): Promise<T> {
   let response: Response;
   try {
-    response = await fetch(`${API_BASE}/api/evaluate`, {
+    response = await fetch(`${API_BASE}${path}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ ingredients, claims }),
+      body: JSON.stringify(payload),
     });
   } catch (cause) {
     throw new Error(`无法连接裁决服务：${(cause as Error).message}`);
   }
 
   if (response.ok) {
-    return (await response.json()) as ReleaseResponse;
+    return (await response.json()) as T;
   }
 
   if (response.status === 422) {
-    const payload = (await response.json()) as { detail: FastApiError[] };
-    throw new ApiError(mapFieldErrors(payload.detail), response.status);
+    const payload422 = (await response.json()) as { detail: FastApiError[] };
+    throw new ApiError(mapFieldErrors(payload422.detail), response.status);
   }
 
   let detail = "";
@@ -73,4 +78,19 @@ export async function evaluateRelease(
     // 非 JSON 错误体，忽略
   }
   throw new Error(`裁决服务返回 HTTP ${response.status}${detail ? `：${detail}` : ""}`);
+}
+
+export function evaluateRelease(
+  ingredients: IngredientRow[],
+  claims: Claim[],
+): Promise<ReleaseResponse> {
+  return post<ReleaseResponse>("/api/evaluate", { ingredients, claims });
+}
+
+// 前后方案影响比较：同时提交对照方案与现方案，后端分别裁决后按声明对比
+export function compareRelease(
+  baseline: ReleasePlan,
+  current: ReleasePlan,
+): Promise<CompareResponse> {
+  return post<CompareResponse>("/api/compare", { baseline, current });
 }

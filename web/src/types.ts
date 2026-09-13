@@ -66,6 +66,39 @@ export interface ReleaseResponse {
   verdicts: ClaimVerdict[];
 }
 
+// 一次方案（对照或现方案）的完整输入：配方表 + 拟印刷声明
+export interface ReleasePlan {
+  ingredients: IngredientRow[];
+  claims: Claim[];
+}
+
+// 与后端 api/app/rules.py 的 CompareStatus 严格对应
+export const COMPARE_STATUSES = ["newly_blocked", "resolved", "unchanged"] as const;
+export type CompareStatus = (typeof COMPARE_STATUSES)[number];
+
+export const COMPARE_STATUS_LABELS: Record<CompareStatus, string> = {
+  newly_blocked: "新受阻",
+  resolved: "已解除",
+  unchanged: "未变化",
+};
+
+export interface ClaimComparison {
+  claim: Claim;
+  status: CompareStatus;
+  baseline_allowed: boolean;
+  current_allowed: boolean;
+  // 仅现方案存在的阻断证据
+  new_blockers: Evidence[];
+  // 仅对照方案存在的阻断证据
+  resolved_blockers: Evidence[];
+}
+
+export interface CompareResponse {
+  baseline: ReleaseResponse;
+  current: ReleaseResponse;
+  comparisons: ClaimComparison[];
+}
+
 export interface FieldError {
   // 去掉 FastAPI 定位中的 "body" 段后的字段路径，如 ingredients[0].contact_milk
   field: string;

@@ -1,11 +1,19 @@
 import { useState } from "react";
-import { ApiError, evaluateRelease } from "./api";
+import { ApiError, compareRelease, evaluateRelease } from "./api";
 import { ClaimPicker } from "./components/ClaimPicker";
+import { ComparePanel } from "./components/ComparePanel";
 import { ErrorSummary } from "./components/ErrorSummary";
 import { RecipeTable } from "./components/RecipeTable";
 import { ResultPanel } from "./components/ResultPanel";
 import { emptyRow } from "./types";
-import type { Claim, FieldError, IngredientRow, ReleaseResponse } from "./types";
+import type {
+  Claim,
+  CompareResponse,
+  FieldError,
+  IngredientRow,
+  ReleasePlan,
+  ReleaseResponse,
+} from "./types";
 
 export default function App() {
   const [rows, setRows] = useState<IngredientRow[]>([emptyRow()]);
@@ -14,6 +22,10 @@ export default function App() {
   const [fieldErrors, setFieldErrors] = useState<FieldError[]>([]);
   const [transportError, setTransportError] = useState<string>("");
   const [submitting, setSubmitting] = useState(false);
+  // 对照快照：深拷贝保存，后续编辑表格不会反向污染
+  const [baseline, setBaseline] = useState<ReleasePlan | null>(null);
+  const [comparison, setComparison] = useState<CompareResponse | null>(null);
+  const [comparing, setComparing] = useState(false);
 
   const updateRow = (index: number, row: IngredientRow) => {
     setRows((current) => current.map((item, i) => (i === index ? row : item)));
@@ -35,23 +47,30 @@ export default function App() {
 
   const resetOutcome = () => {
     setResult(null);
+    setComparison(null);
     setFieldErrors([]);
     setTransportError("");
+  };
+
+  // 前端即时提示：空配方/未选声明不发请求；后端仍然独立强制校验
+  const validateClientSide = (): boolean => {
+    if (rows.length === 0) {
+      setFieldErrors([
+        { field: "ingredients", message: "配方不能为空：至少需要一条原料行。" },
+      ]);
+      return false;
+    }
+    if (claims.length === 0) {
+      setFieldErrors([{ field: "claims", message: "请至少选择一条拟印刷声明。" }]);
+      return false;
+    }
+    return true;
   };
 
   const handleSubmit = async (event: React.FormEvent) => {
     event.preventDefault();
     resetOutcome();
-
-    // 前端即时提示：空配方/未选声明不发请求；后端仍然独立强制校验
-    if (rows.length === 0) {
-      setFieldErrors([{ field: "ingredients", message: "配方不能为空：至少需要一条原料行。" }]);
-      return;
-    }
-    if (claims.length === 0) {
-      setFieldErrors([{ field: "claims", message: "请至少选择一条拟印刷声明。" }]);
-      return;
-    }
+    if (!validateClientSide()) return;
 
     setSubmitting(true);
     try {
@@ -65,6 +84,42 @@ export default function App() {
       }
     } finally {
       setSubmitting(false);
+    }
+  };
+
+  const snapshotBaseline = () => {
+    // 深拷贝当前配方与声明：此后编辑表格不会改动已保存的对照
+    setBaseline({
+      ingredients: rows.map((row) => ({ ...row })),
+      claims: [...claims],
+    });
+  };
+
+  const handleCompare = async () => {
+    if (!baseline) return;
+    // 仅清除上一轮结果与错误；对照快照与编辑内容始终保留，失败可直接重试
+    setComparison(null);
+    setFieldErrors([]);
+    setTransportError("");
+    if (!validateClientSide()) return;
+
+    setComparing(true);
+    try {
+      const response = await compareRelease(baseline, {
+        ingredients: rows,
+        claims,
+      });
+      setComparison(response);
+      // 页面保留现方案结果
+      setResult(response.current);
+    } catch (error) {
+      if (error instanceof ApiError) {
+        setFieldErrors(error.fieldErrors);
+      } else {
+        setTransportError((error as Error).message);
+      }
+    } finally {
+      setComparing(false);
     }
   };
 
@@ -83,11 +138,36 @@ export default function App() {
         <ClaimPicker selected={claims} onToggle={toggleClaim} />
 
         <div className="actions">
+          <button
+            type="button"
+            className="secondary"
+            onClick={snapshotBaseline}
+            disabled={!result}
+            data-testid="set-baseline"
+          >
+            设为对照
+          </button>
+          <button
+            type="button"
+            className="secondary"
+            onClick={handleCompare}
+            disabled={!baseline || comparing}
+            data-testid="compare"
+          >
+            {comparing ? "比较中…" : "比较改动"}
+          </button>
           <button type="submit" disabled={submitting} data-testid="submit">
             {submitting ? "裁决中…" : "提交裁决"}
           </button>
         </div>
       </form>
+
+      {baseline && (
+        <p className="baseline-hint" data-testid="baseline-hint">
+          已保存对照快照：{baseline.ingredients.length} 行原料、{baseline.claims.length}{" "}
+          条声明。继续编辑上方表格后点击“比较改动”。
+        </p>
+      )}
 
       {transportError && (
         <section className="card error-summary" role="alert" data-testid="transport-error">
@@ -97,6 +177,7 @@ export default function App() {
 
       <ErrorSummary errors={fieldErrors} />
       {result && <ResultPanel result={result} />}
+      {comparison && <ComparePanel comparison={comparison} />}
     </div>
   );
 }

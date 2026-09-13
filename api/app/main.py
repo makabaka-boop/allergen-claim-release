@@ -1,8 +1,9 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from .compare import compare
 from .evaluate import evaluate
-from .schemas import ReleaseRequest, ReleaseResponse
+from .schemas import CompareRequest, CompareResponse, ReleaseRequest, ReleaseResponse
 
 app = FastAPI(
     title="包装放行台 API",
@@ -28,3 +29,13 @@ def health() -> dict[str, str]:
 def release(request: ReleaseRequest) -> ReleaseResponse:
     """对结构化配方与声明做真实裁决。非法请求返回 422 字段级错误，不产生判定。"""
     return evaluate(request)
+
+
+@app.post("/api/compare", response_model=CompareResponse)
+def compare_plans(request: CompareRequest) -> CompareResponse:
+    """前后方案影响比较：对照与现方案分别复用同一裁决，再按声明对比。
+
+    任一侧字段非法时返回 422，loc 以 baseline/current 前缀定位到对应方案，
+    且不产生任何比较结果。
+    """
+    return compare(request)
