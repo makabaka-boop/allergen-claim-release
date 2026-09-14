@@ -7,6 +7,8 @@ import type {
   IngredientRow,
   ReleasePlan,
   ReleaseResponse,
+  TraceabilityPayload,
+  TraceabilityResponse,
 } from "./types";
 
 // 开发环境走 Vite 代理（同源）；容器内由 Nginx 同源反代到 API
@@ -100,4 +102,11 @@ export function compareRelease(
 // 换线残留推演：提交生产批次序列与相邻批次清洁边界，逐批返回残留与来源
 export function simulateChangeover(payload: ChangeoverPayload): Promise<ChangeoverResponse> {
   return post<ChangeoverResponse>("/api/changeover", payload);
+}
+
+// 批次用料追溯：提交完整关系图（批次台账 + 投料关系）与污染源，
+// 后端校验引用/自引用/成环后按录入顺序稳定遍历，返回按层级组织的
+// 可到达批次及每个批次的最短投料路径
+export function traceBatches(payload: TraceabilityPayload): Promise<TraceabilityResponse> {
+  return post<TraceabilityResponse>("/api/trace", payload);
 }

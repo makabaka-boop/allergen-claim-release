@@ -6,6 +6,7 @@ import { ComparePanel } from "./components/ComparePanel";
 import { ErrorSummary } from "./components/ErrorSummary";
 import { RecipeTable } from "./components/RecipeTable";
 import { ResultPanel } from "./components/ResultPanel";
+import { TraceabilityPanel } from "./components/TraceabilityPanel";
 import { emptyRow } from "./types";
 import type {
   Claim,
@@ -208,6 +209,12 @@ export default function App() {
             不与放行台的配方/裁决/对照状态共享。 */}
         <div className="desk-column">
           <ChangeoverPanel />
+        </div>
+
+        {/* 独立的批次用料追溯台：自管批次台账、投料关系与污染源状态，
+            与放行台裁决、方案比较、换线推演均不共享状态。 */}
+        <div className="desk-column">
+          <TraceabilityPanel />
         </div>
       </div>
     </div>

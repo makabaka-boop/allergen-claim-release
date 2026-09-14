@@ -15,6 +15,7 @@ const FIELD_NAMES: Record<string, string> = {
   batches: "生产批次序列",
   boundaries: "清洁边界",
   cleaned: "经验证清洁标记",
+  source_code: "污染源批次",
 };
 
 function humanizeFlag(rest: string): string | null {
@@ -46,6 +47,19 @@ function humanizeField(field: string): string {
     return `第 ${rowNumber} 行字段 ${rest}`;
   }
 
+  // 批次用料追溯：batches[i].code / material_name / batch_type
+  // （必须在换线推演的 batches[i].* 通用匹配之前命中，取得精确字段名）
+  const traceBatchMatch = field.match(
+    /^batches\[(\d+)\]\.(code|material_name|batch_type)$/,
+  );
+  if (traceBatchMatch) {
+    const order = Number(traceBatchMatch[1]) + 1;
+    const rest = traceBatchMatch[2];
+    if (rest === "code") return `第 ${order} 个批次编号`;
+    if (rest === "material_name") return `第 ${order} 个批次物料名称`;
+    return `第 ${order} 个批次类型`;
+  }
+
   // 换线推演：batches[i].name / batches[i].contains_*
   const batchMatch = field.match(/^batches\[(\d+)\](?:\.(.+))?$/);
   if (batchMatch) {
@@ -71,6 +85,15 @@ function humanizeField(field: string): string {
       return `第 ${left} 批与第 ${left + 1} 批之间局部清洁的清除目标`;
     }
     return `第 ${left} 批与第 ${left + 1} 批之间清洁边界字段 ${rest}`;
+  }
+
+  // 批次用料追溯：relations[i].from_code / to_code
+  const traceRelationMatch = field.match(/^relations\[(\d+)\]\.(from_code|to_code)$/);
+  if (traceRelationMatch) {
+    const order = Number(traceRelationMatch[1]) + 1;
+    return traceRelationMatch[2] === "from_code"
+      ? `第 ${order} 条投料关系的来源批次`
+      : `第 ${order} 条投料关系的目标批次`;
   }
 
   return FIELD_NAMES[field] ?? field;

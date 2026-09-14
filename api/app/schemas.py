@@ -257,3 +257,125 @@ class ChangeoverResponse(BaseModel):
     boundaries: list[CleaningBoundaryReport] = Field(
         ..., description="逐边界回显清洁是否使残留归零，与输入边界一一对应"
     )
+
+
+# ---------------------------------------------------------------------------
+# 批次用料追溯（独立模块，与放行裁决/方案比较/换线推演互不影响）
+# ---------------------------------------------------------------------------
+
+# 批次类型固定枚举：原料 / 中间料 / 成品（录入时选择，结果中原样回显）
+BATCH_TYPES = ("raw_material", "intermediate", "finished_good")
+
+
+class TraceBatchInput(BaseModel):
+    """物料批次台账中的一个批次：批次编号 + 物料名称 + 批次类型。
+
+    批次编号、物料名称去空白后均不得为空；编号在整份台账内不得重复
+    （后者为跨字段约束，见 traceability.validate_graph）。
+    """
+
+    model_config = {"extra": "forbid"}
+
+    code: NonEmptyName = Field(..., description="批次编号（去空白后非空、台账内唯一）")
+    material_name: NonEmptyName = Field(..., description="物料名称（去空白后非空）")
+    batch_type: str = Field(
+        ...,
+        description="批次类型：raw_material 原料 / intermediate 中间料 / finished_good 成品",
+    )
+
+    @field_validator("batch_type", mode="before")
+    @classmethod
+    def _validate_batch_type(cls, value: object) -> object:
+        """类型字段以普通字符串承载并显式白名单校验，未知取值精确定位到 batch_type。"""
+        if not isinstance(value, str) or value.strip() not in BATCH_TYPES:
+            raise ValueError(
+                "非法批次类型：仅允许 raw_material（原料）/ "
+                "intermediate（中间料）/ finished_good（成品）"
+            )
+        return value.strip()
+
+
+class TraceRelationInput(BaseModel):
+    """一条投料关系：来源批次（from_code）被投入目标批次（to_code）。
+
+    方向固定为“来源 → 目标”：原料批次投入中间料、中间料投入成品。
+    两端必须都能在批次台账中找到、不得自引用；这些是跨记录约束，
+    见 traceability.validate_graph。
+    """
+
+    model_config = {"extra": "forbid"}
+
+    from_code: NonEmptyName = Field(..., description="来源批次编号（被投入的物料批次）")
+    to_code: NonEmptyName = Field(..., description="目标批次编号（投料去向批次）")
+
+
+class TraceabilityRequest(BaseModel):
+    """批次用料追溯请求：完整关系图（批次台账 + 投料关系）+ 污染源批次编号。
+
+    后端接收完整关系图与污染源后统一校验引用、自引用与成环，再以录入
+    顺序稳定遍历，只返回可从污染源沿投料方向到达的批次。批次编号空白/
+    重复、关系端点不存在、自引用或关系成环均返回定位到具体批次或关系
+    的字段级错误，且不产生追溯结果。
+    """
+
+    model_config = {"extra": "forbid"}
+
+    batches: list[TraceBatchInput] = Field(
+        ..., min_length=1, description="物料批次台账，至少一个批次（空数组拒绝）"
+    )
+    relations: list[TraceRelationInput] = Field(
+        ..., description="投料关系列表（按录入顺序作为稳定遍历与选路的关系序号）"
+    )
+    source_code: NonEmptyName = Field(..., description="发起追溯的污染源批次编号")
+
+
+class TracePathStep(BaseModel):
+    """最短投料路径上的一跳：第 relation_index 条关系把来源批次投入目标批次。"""
+
+    relation_index: int = Field(
+        ..., ge=0, description="该跳所用投料关系的录入序号（从 0 开始）"
+    )
+    from_code: str = Field(..., description="该跳的来源批次编号")
+    to_code: str = Field(..., description="该跳的目标批次编号")
+
+
+class TracedBatch(BaseModel):
+    """一个可从污染源到达的受影响批次及其最短投料路径。"""
+
+    code: str = Field(..., description="受影响批次编号")
+    material_name: str = Field(..., description="该批次的物料名称（原样回显）")
+    batch_type: str = Field(..., description="该批次的批次类型（原样回显）")
+    level: int = Field(
+        ..., ge=1, description="传播层级：距污染源的最短投料跳数（污染源本身层级为 0，不出现在此列表）"
+    )
+    path_codes: list[str] = Field(
+        ..., description="最短投料路径经过的批次编号：[污染源, …, 该批次]"
+    )
+    path_relation_indices: list[int] = Field(
+        ...,
+        description="最短投料路径各跳所用关系的录入序号；"
+        "同一批次经多条路径到达时，取层级最少且该序号序列字典序最小的路径",
+    )
+    path_steps: list[TracePathStep] = Field(
+        ..., description="最短投料路径的逐跳解释（关系序号 + 来源/目标批次编号）"
+    )
+
+
+class TraceLevelGroup(BaseModel):
+    """同一传播层级的受影响批次分组（组内按首次到达顺序稳定排列）。"""
+
+    level: int = Field(..., ge=1)
+    batches: list[TracedBatch]
+
+
+class TraceabilityResponse(BaseModel):
+    source_code: str = Field(..., description="污染源批次编号（回显）")
+    source_material_name: str = Field(..., description="污染源批次的物料名称")
+    source_batch_type: str = Field(..., description="污染源批次的批次类型")
+    affected_count: int = Field(..., description="可从污染源到达的下游批次总数（不含污染源本身）")
+    levels: list[TraceLevelGroup] = Field(
+        ..., description="按传播层级组织的受影响批次（层级自 1 开始，无空层级）"
+    )
+    affected_batches: list[TracedBatch] = Field(
+        ..., description="与 levels 内容一致的扁平列表，按层级、层级内首次到达顺序稳定排列"
+    )

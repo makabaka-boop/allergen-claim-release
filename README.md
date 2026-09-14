@@ -5,9 +5,13 @@
 本系统要求浏览器把每行原料的「直接成分勾选」与「同组共线接触标记」一并提交，由后端
 按固定规则联合裁决。
 
+在放行台旁还并排设有两个**独立模块**：换线残留推演（生产批次序列与清洁边界）与
+**批次用料追溯台**（物料批次及其投料关系图，供应商通报某原料批次过敏原污染后，
+快速追溯所有直接使用与间接影响的中间料/成品批次）。三个模块各自管理状态、互不共享。
+
 - 后端：Python 3.12 · FastAPI · Pydantic
 - 前端：TypeScript · React 18 · Vite
-- 测试：pytest（裁决与 HTTP）、Vitest + Testing Library（组件与状态流）、
+- 测试：pytest（裁决、比较、换线与追溯及 HTTP）、Vitest + Testing Library（组件与状态流）、
   Playwright（浏览器对真实 Web+API 栈的端到端）
 - 编排：Docker Compose（Web / API / 一次性 `verify` 验收服务）
 
@@ -275,6 +279,89 @@
 时勾选已验证清除目标并在边界结果中确认实际清除项；422 或前端即时校验失败时保留
 全部批次与清洁选择并就地提示，修正后可直接再次提交。
 
+### 批次用料追溯 `POST /api/trace`
+
+供应商通报某原料批次存在过敏原污染后，质量人员需要迅速找出所有使用它的中间料和
+成品批次。追溯台以**物料批次及其投料关系**为核心对象：用户在批次台账中录入每个批次的
+批次编号、物料名称与批次类型（`raw_material` 原料 / `intermediate` 中间料 /
+`finished_good` 成品），再录入若干条“来源批次投入目标批次”的投料关系（方向固定
+`from_code → to_code`，关系按**录入顺序**获得稳定的关系序号 0、1、2…），最后选定一个
+污染源批次编号发起追溯。
+
+```json
+{
+  "batches": [
+    {"code": "RAW-1", "material_name": "花生原料", "batch_type": "raw_material"},
+    {"code": "INT-1", "material_name": "花生酱中间料", "batch_type": "intermediate"},
+    {"code": "FG-1", "material_name": "花生酥成品", "batch_type": "finished_good"}
+  ],
+  "relations": [
+    {"from_code": "RAW-1", "to_code": "INT-1"},
+    {"from_code": "INT-1", "to_code": "FG-1"}
+  ],
+  "source_code": "RAW-1"
+}
+```
+
+追溯规则（固定，代码即规则）：
+
+- 后端接收**完整关系图与污染源**，先校验引用与成环，再以**录入顺序稳定遍历**
+  （邻接按关系录入序号排列的 BFS），**只返回可从污染源沿投料方向到达的批次**；
+  与污染源不连通、或只在其上游的批次一律不返回，污染源本身层级为 0 且不计入结果。
+- 结果按**传播层级**分组：第 1 层为直接使用污染源的批次，第 2 层及以后为间接影响
+  批次（无空层级）；同层按首次到达顺序（即关系录入顺序）稳定排列。
+- 为每个受影响批次还原**最短投料路径**。同一批次经多条路径到达时，选择**层级最少
+  （跳数最少）且关系序号序列字典序最小**的路径——例如菱形汇聚 `R→I1, R→I2, I1→F,
+  I2→F` 中成品 F 的两条等长路径关系序列为 `[0,2]` 与 `[1,3]`，取字典序更小的
+  `[0,2]`（经 I1）。路径逐跳回显 `relation_index` 与 `from_code/to_code`。
+
+响应（HTTP 200）：
+
+```json
+{
+  "source_code": "RAW-1",
+  "source_material_name": "花生原料",
+  "source_batch_type": "raw_material",
+  "affected_count": 2,
+  "levels": [
+    {"level": 1, "batches": [
+      {"code": "INT-1", "material_name": "花生酱中间料", "batch_type": "intermediate",
+       "level": 1, "path_codes": ["RAW-1", "INT-1"],
+       "path_relation_indices": [0],
+       "path_steps": [{"relation_index": 0, "from_code": "RAW-1", "to_code": "INT-1"}]}
+    ]},
+    {"level": 2, "batches": [
+      {"code": "FG-1", "material_name": "花生酥成品", "batch_type": "finished_good",
+       "level": 2, "path_codes": ["RAW-1", "INT-1", "FG-1"],
+       "path_relation_indices": [0, 1],
+       "path_steps": [
+         {"relation_index": 0, "from_code": "RAW-1", "to_code": "INT-1"},
+         {"relation_index": 1, "from_code": "INT-1", "to_code": "FG-1"}]}
+    ]}
+  ],
+  "affected_batches": [/* 与 levels 内容一致的扁平列表，按层级、层内首次到达顺序 */]
+}
+```
+
+非法输入同样返回 FastAPI 标准 422 `detail` 列表、**不产生任何追溯结果**，`loc`
+精确定位到具体批次或关系：
+
+- 批次台账为空：`body.batches`；
+- 批次编号/物料名称空白：`body.batches.0.code` / `body.batches.0.material_name`；
+- 未知批次类型：`body.batches.0.batch_type`（仅允许三类枚举）；
+- 批次编号重复：每个参与重复的批次（含首次出现者）各自定位到其 `code`；
+- 关系端点在台账中不存在：`body.relations.0.from_code` / `body.relations.0.to_code`；
+- 自引用（来源与目标为同一批次）：定位到 `body.relations.0.to_code`；
+- 关系成环：每条处于有向环上的关系各自定位到其 `to_code`（即使环与污染源不连通，
+  整张图仍被拒绝，不产生结果）；环的“出口”关系不在环上、不被标记；
+- 污染源编号在台账中不存在：`body.source_code`；
+- 未定义的额外字段（批次层/关系层/请求层均 `extra=forbid`）按字段定位拒绝。
+
+前端追溯台在放行台旁以**独立模块**呈现，模块自管批次台账、投料关系与污染源状态，
+不与放行台/比较/换线模块共享。422 或前端即时校验失败时**保留全部草稿**（台账、
+关系、污染源）并就地提示，修正后可直接再次发起；任何编辑都会立即清除与当前输入
+不一致的旧结果（在途响应即使成功或返回 422 也会被作废），等待重新追溯。
+
 另有 `GET /health` 返回 `{"status":"ok"}`，供健康检查与验收使用。
 
 ## 用 Docker Compose 启动（推荐）
@@ -301,7 +388,7 @@ WEB_PORT=9090 API_PORT=9000 docker compose up --build
 `verify` 是一个**运行一次即退出**的服务：它构建独立镜像（Python 3.12 + Node 20 +
 预装 Chromium），在真实启动 Web 与 API 容器后依次执行：
 
-1. 后端 `pytest`（裁决规则与 422 字段级错误）；
+1. 后端 `pytest`（裁决规则、方案比较、换线推演与批次追溯及 422 字段级错误）；
 2. 前端 TypeScript 类型检查与生产构建；
 3. `Vitest` 组件/状态流测试；
 4. `Playwright` 端到端测试（容器内浏览器访问同栈真实 Web，经 Nginx 打到真实 FastAPI）。
@@ -360,15 +447,16 @@ E2E_BASE_URL=http://localhost:5173 npx playwright test       # 本地 Vite 开�
 │   │   ├── evaluate.py  # 联合裁决：直接成分 + 共线接触
 │   │   ├── compare.py   # 前后方案比较：复用 evaluate，按声明三态对比证据差集
 │   │   ├── changeover.py # 换线残留推演：批次序列、清洁归零、并集与最近来源
+│   │   ├── traceability.py # 批次用料追溯：引用/成环校验、稳定遍历、最短投料路径
 │   │   └── main.py      # 路由、CORS、健康检查
-│   └── tests/           # pytest：规则矩阵 + HTTP 422 契约 + 方案比较 + 残留推演
+│   └── tests/           # pytest：规则矩阵 + HTTP 422 契约 + 方案比较 + 残留推演 + 批次追溯
 ├── web/                 # React + Vite 前端
 │   ├── src/
 │   │   ├── types.ts            # 与后端一一对应的枚举、类型、空行工厂
 │   │   ├── api.ts              # 真实 fetch 调用与 422 字段错误映射
-│   │   ├── App.tsx             # 放行台 + 换线残留推演两个并排独立模块
-│   │   └── components/         # 配方表/声明选择/证据面板/比较面板/换线模块/字段错误
-│   ├── e2e/*.spec.ts           # Playwright 真实联调端到端（裁决 + 比较 + 残留推演）
+│   │   ├── App.tsx             # 放行台 + 换线推演 + 批次追溯三个并排独立模块
+│   │   └── components/         # 配方表/声明选择/证据面板/比较面板/换线模块/追溯模块/字段错误
+│   ├── e2e/*.spec.ts           # Playwright 真实联调端到端（裁决 + 比较 + 残留推演 + 批次追溯）
 │   └── src/**/*.test.ts(x)     # Vitest
 ├── verify/              # 一次性验收镜像构建与执行脚本
 ├── docker-compose.yml

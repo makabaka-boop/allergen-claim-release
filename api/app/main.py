@@ -11,12 +11,15 @@ from .schemas import (
     CompareResponse,
     ReleaseRequest,
     ReleaseResponse,
+    TraceabilityRequest,
+    TraceabilityResponse,
 )
+from .traceability import trace
 
 app = FastAPI(
     title="包装放行台 API",
     description="基于直接成分与同组共线接触的“不含”声明放行裁决服务",
-    version="1.1.0",
+    version="1.2.0",
 )
 
 # 本地 Vite 开发服务器联调需要跨域；生产由 Nginx 同源反代
@@ -60,3 +63,15 @@ def changeover(request: ChangeoverRequest) -> ChangeoverResponse:
     且不产生推演结果。
     """
     return simulate(request)
+
+
+@app.post("/api/trace", response_model=TraceabilityResponse)
+def trace_batches(request: TraceabilityRequest) -> TraceabilityResponse:
+    """批次用料追溯：在完整关系图上从污染源沿投料方向稳定遍历。
+
+    只返回可从污染源到达的下游批次，按传播层级分组并为每个批次还原
+    层级最少、关系序号字典序最小的最短投料路径。批次编号空白/重复、
+    关系端点不存在、自引用、关系成环或污染源不存在均返回 422 字段级
+    错误，loc 定位到具体批次或关系，且不产生追溯结果。
+    """
+    return trace(request)

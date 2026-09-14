@@ -205,3 +205,77 @@ export function emptyBatch(name = ""): BatchInput {
     contains_rye: false,
   };
 }
+
+// ---------------------------------------------------------------------------
+// 批次用料追溯（独立模块：物料批次台账 + 来源→目标投料关系 + 污染源追溯）
+// ---------------------------------------------------------------------------
+
+// 批次类型与后端 api/app/schemas.py 的 BATCH_TYPES 严格对应
+export const BATCH_TYPES = ["raw_material", "intermediate", "finished_good"] as const;
+export type BatchType = (typeof BATCH_TYPES)[number];
+
+export const BATCH_TYPE_LABELS: Record<BatchType, string> = {
+  raw_material: "原料",
+  intermediate: "中间料",
+  finished_good: "成品",
+};
+
+export interface TraceBatchInput {
+  code: string;
+  material_name: string;
+  batch_type: BatchType | "";
+}
+
+export interface TraceRelationInput {
+  from_code: string;
+  to_code: string;
+}
+
+export interface TraceabilityPayload {
+  batches: {
+    code: string;
+    material_name: string;
+    batch_type: BatchType;
+  }[];
+  relations: TraceRelationInput[];
+  source_code: string;
+}
+
+export interface TracePathStep {
+  relation_index: number;
+  from_code: string;
+  to_code: string;
+}
+
+export interface TracedBatch {
+  code: string;
+  material_name: string;
+  batch_type: BatchType;
+  // 传播层级：距污染源的最短投料跳数（污染源层级为 0，不出现在结果中）
+  level: number;
+  path_codes: string[];
+  path_relation_indices: number[];
+  path_steps: TracePathStep[];
+}
+
+export interface TraceLevelGroup {
+  level: number;
+  batches: TracedBatch[];
+}
+
+export interface TraceabilityResponse {
+  source_code: string;
+  source_material_name: string;
+  source_batch_type: BatchType;
+  affected_count: number;
+  levels: TraceLevelGroup[];
+  affected_batches: TracedBatch[];
+}
+
+export function emptyTraceBatch(): TraceBatchInput {
+  return { code: "", material_name: "", batch_type: "" };
+}
+
+export function emptyTraceRelation(): TraceRelationInput {
+  return { from_code: "", to_code: "" };
+}

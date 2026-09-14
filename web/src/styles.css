@@ -21,7 +21,7 @@ body {
 }
 
 .page {
-  max-width: 1180px;
+  max-width: 1680px;
   margin: 0 auto;
   padding: 24px 20px 64px;
 }
@@ -266,11 +266,11 @@ button.danger {
 }
 
 /* ---------------------------------------------------------------------------
-   放行台与换线残留推演：两个独立模块并排（窄屏自动堆叠）
+   放行台、换线残留推演与批次用料追溯：三个独立模块并排（窄屏自动堆叠）
 --------------------------------------------------------------------------- */
 .desk-grid {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) minmax(0, 1fr);
   gap: 24px;
   align-items: start;
 }
@@ -409,6 +409,110 @@ button.danger {
   background: var(--pass-bg);
   border-radius: 4px;
   font-size: 13px;
+}
+
+/* ---------------------------------------------------------------------------
+   批次用料追溯台
+--------------------------------------------------------------------------- */
+.trace-module header h2 {
+  margin-bottom: 4px;
+}
+
+.tr-table td input,
+.tr-table td select {
+  width: 150px;
+}
+
+.tr-source-label {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-weight: 600;
+}
+
+.tr-source-input {
+  flex: 1;
+  max-width: 320px;
+}
+
+.tr-summary {
+  color: var(--muted);
+}
+
+.tr-level {
+  border: 1px solid var(--line);
+  border-left-width: 6px;
+  border-radius: 6px;
+  padding: 8px 14px 12px;
+  margin: 12px 0;
+  background: #fbfcfe;
+}
+
+.tr-level h3 {
+  margin: 6px 0 8px;
+  font-size: 15px;
+}
+
+.tr-affected-list {
+  margin: 0;
+  padding-left: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.tr-affected-item {
+  background: #fff;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 8px 12px;
+}
+
+.tr-affected-head {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+}
+
+.tr-affected-code {
+  font-weight: 700;
+}
+
+.tr-affected-meta {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.tr-affected-route {
+  margin: 4px 0;
+  font-size: 13px;
+}
+
+.tr-path {
+  margin: 4px 0 0;
+  padding-left: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.tr-path-hop {
+  font-size: 13px;
+}
+
+.tr-path-relation {
+  color: var(--muted);
+}
+
+@media (min-width: 1081px) and (max-width: 1460px) {
+  /* 中等宽度：放行台独占一行，两个推演/追溯模块并排在下一行 */
+  .desk-grid {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  }
+  .desk-grid > .desk-column:first-child {
+    grid-column: 1 / -1;
+  }
 }
 
 @media (max-width: 1080px) {
