@@ -10,7 +10,6 @@ from typing import Annotated
 from pydantic import BaseModel, Field, StringConstraints, field_validator
 
 from .rules import Claim, CompareStatus, Target
-
 # 原料名非空纯字符串（去空白后至少 1 个字符）
 NonEmptyName = Annotated[str, StringConstraints(min_length=1, strip_whitespace=True)]
 
@@ -133,3 +132,104 @@ class CompareResponse(BaseModel):
     baseline: ReleaseResponse = Field(..., description="对照方案的完整裁决结果")
     current: ReleaseResponse = Field(..., description="现方案的完整裁决结果")
     comparisons: list[ClaimComparison]
+
+
+# ---------------------------------------------------------------------------
+# 换线残留推演（独立模块，与放行裁决/方案比较互不影响）
+# ---------------------------------------------------------------------------
+
+
+class BatchInput(BaseModel):
+    """生产批次序列中的一个批次：名称 + 五类过敏原直接成分。
+
+    五类标记均为必填布尔值，缺失或为 null/非布尔一律按批次字段级错误拒绝。
+    """
+
+    model_config = {"extra": "forbid"}
+
+    name: NonEmptyName = Field(..., description="批次名称（去空白后非空、序列内不重复）")
+    contains_milk: bool = _BOOL
+    contains_peanut: bool = _BOOL
+    contains_wheat: bool = _BOOL
+    contains_barley: bool = _BOOL
+    contains_rye: bool = _BOOL
+
+
+class CleaningBoundary(BaseModel):
+    """相邻批次之间的清洁边界：标记进入下一批前是否完成经验证清洁。
+
+    经验证清洁会在下一批开始前清空全部残留；未清洁则残留继续带入。
+    """
+
+    model_config = {"extra": "forbid"}
+
+    cleaned: bool = Field(..., strict=True, description="true=已完成经验证清洁，下一批从零开始")
+
+
+class ChangeoverRequest(BaseModel):
+    """换线残留推演请求：以生产批次序列为核心对象。
+
+    batches 至少两个批次；boundaries 为相邻批次间的清洁标记，
+    合法长度固定为 len(batches) - 1。名称去空白后不得重复。
+    批次数量不足/名称空白或重复/边界缺失或长度不符/成分标记非布尔，
+    均返回定位到具体批次或边界的字段级错误，且不产生推演结果。
+    """
+
+    model_config = {"extra": "forbid"}
+
+    batches: list[BatchInput] = Field(..., description="按生产顺序排列的批次，至少两个")
+    boundaries: list[CleaningBoundary] = Field(
+        ..., description="相邻批次间的清洁标记，长度必须为批次数减一"
+    )
+
+
+class ResidueItem(BaseModel):
+    """单个残留/带入目标项，并保留最近来源批次。"""
+
+    target: Target
+    source_batch_index: int = Field(..., ge=0, description="最近来源批次序号（从 0 开始）")
+    source_batch_name: str = Field(..., description="最近来源批次名称")
+
+
+class CleaningBoundaryReport(BaseModel):
+    """相邻批次间清洁边界的推演结果（边界 i 位于批次 i 与批次 i+1 之间）。"""
+
+    boundary_index: int = Field(..., ge=0)
+    cleaned: bool = Field(..., description="用户标记：是否完成经验证清洁")
+    residue_cleared: bool = Field(
+        ..., description="true 表示该边界经验证清洁，离开残留未继续带入下一批"
+    )
+
+
+class BatchResidueReport(BaseModel):
+    """单个批次的换线残留推演结果。"""
+
+    batch_index: int = Field(..., ge=0)
+    name: str
+    direct_ingredients: list[Target] = Field(
+        ..., description="本批直接含有的五类过敏原目标项（固定目标顺序）"
+    )
+    incoming_residue: list[ResidueItem] = Field(
+        ..., description="进入残留：本批开始时产线上的上一批残留"
+    )
+    carried_over: list[ResidueItem] = Field(
+        ...,
+        description="前序批次带入物：进入残留中本批未直接含有的目标项"
+        "（本批直接含有的同目标项不构成带入，避免直接成分误报）",
+    )
+    outgoing_residue: list[ResidueItem] = Field(
+        ...,
+        description="离开残留：未清洁时为进入残留与本批直接成分的并集"
+        "（每项保留最近来源批次）；首项前若已清洁则为空",
+    )
+    # 本批开始前的清洁边界（第 0 批之前没有边界，为 null）
+    cleaned_before: bool | None = Field(
+        ..., description="上一条边界是否经验证清洁；第 0 批为 null"
+    )
+
+
+class ChangeoverResponse(BaseModel):
+    batches: list[BatchResidueReport]
+    boundaries: list[CleaningBoundaryReport] = Field(
+        ..., description="逐边界回显清洁是否使残留归零，与输入边界一一对应"
+    )

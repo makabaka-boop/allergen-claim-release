@@ -147,6 +147,105 @@
   （如 `body.current.ingredients.0.contact_wheat`），且不产生任何比较结果；前端连接
   失败时保留对照快照与编辑内容，可直接重试。
 
+### 换线残留推演 `POST /api/changeover`
+
+多款产品共用生产线时，复核员在排产前识别**上一批残留会否带入后续产品**。以
+“生产批次序列”为核心对象：用户按生产顺序录入**至少两个**批次的名称和五类过敏原
+直接成分，并在每对相邻批次之间标记是否完成**经验证清洁**。提交后逐批查看
+进入残留、前序批次带入物与离开残留；调整批次顺序（上移/下移）后可重新推演。
+
+```json
+{
+  "batches": [
+    {
+      "name": "花生酱批次A",
+      "contains_milk": false,
+      "contains_peanut": true,
+      "contains_wheat": false,
+      "contains_barley": false,
+      "contains_rye": false
+    },
+    {
+      "name": "燕麦批次B",
+      "contains_milk": false,
+      "contains_peanut": false,
+      "contains_wheat": false,
+      "contains_barley": false,
+      "contains_rye": false
+    }
+  ],
+  "boundaries": [{ "cleaned": false }]
+}
+```
+
+- `batches`：按生产顺序排列的批次，**至少两个**；每批只有五类**必填布尔**直接成分
+  标记（无共线接触标记），名称去空白后非空且序列内不得重复。
+- `boundaries`：相邻批次间的清洁标记，长度固定为 `len(batches) - 1`，
+  `boundaries[i]` 位于第 `i+1` 批与第 `i+2` 批之间。
+
+推演规则（固定，代码即规则）：
+
+- **经验证清洁**（`cleaned=true`）在下一批开始前清空全部残留，下一批进入残留为空；
+  未清洁时上一批离开残留原样成为下一批进入残留。
+- **离开残留 = 进入残留 ∪ 本批直接成分**（按目标项求并集）。
+- **前序批次带入物仅取本批未直接含有的进入残留**：进入残留中与本批直接成分同目标的
+  项不计入带入，直接成分不会误报为“前序带入”；但离开残留中该目标项的**最近来源
+  批次**会刷新为本批。
+- 每个残留项都携带 `source_batch_index` / `source_batch_name`，始终指向**最近来源
+  批次**（目标项在某批直接成分中再次出现即刷新）。
+
+响应（HTTP 200）：
+
+```json
+{
+  "batches": [
+    {
+      "batch_index": 0,
+      "name": "花生酱批次A",
+      "direct_ingredients": ["peanut"],
+      "incoming_residue": [],
+      "carried_over": [],
+      "outgoing_residue": [
+        { "target": "peanut", "source_batch_index": 0, "source_batch_name": "花生酱批次A" }
+      ],
+      "cleaned_before": null
+    },
+    {
+      "batch_index": 1,
+      "name": "燕麦批次B",
+      "direct_ingredients": [],
+      "incoming_residue": [
+        { "target": "peanut", "source_batch_index": 0, "source_batch_name": "花生酱批次A" }
+      ],
+      "carried_over": [
+        { "target": "peanut", "source_batch_index": 0, "source_batch_name": "花生酱批次A" }
+      ],
+      "outgoing_residue": [
+        { "target": "peanut", "source_batch_index": 0, "source_batch_name": "花生酱批次A" }
+      ],
+      "cleaned_before": false
+    }
+  ],
+  "boundaries": [
+    { "boundary_index": 0, "cleaned": false, "residue_cleared": false }
+  ]
+}
+```
+
+非法输入同样返回 FastAPI 标准 422 `detail` 列表、**不产生任何推演结果**，`loc`
+定位到具体批次或边界：
+
+- 批次数量不足：`body.batches`；
+- 名称空白：`body.batches.0.name`；名称重复：每个重复批次各自定位到其 `name`；
+- 清洁边界缺失或长度不等于批次数减一：`body.boundaries`；
+- 某条边界的 `cleaned` 缺失/为 `null`/非布尔：`body.boundaries.0.cleaned`；
+- 成分标记缺失/为 `null`/非布尔：如 `body.batches.1.contains_milk`；
+- 未定义的额外字段（批次层/边界层/请求层均 `extra=forbid`）按字段定位拒绝。
+
+前端在放行台旁以**独立模块**呈现，模块自管批次序列与清洁边界状态，不与放行台的
+配方/裁决/对照快照共享状态；422 或前端即时校验失败时保留全部输入并就地提示，
+修正后可直接再次提交。
+
 另有 `GET /health` 返回 `{"status":"ok"}`，供健康检查与验收使用。
 
 ## 用 Docker Compose 启动（推荐）
@@ -231,15 +330,16 @@ E2E_BASE_URL=http://localhost:5173 npx playwright test       # 本地 Vite 开�
 │   │   ├── schemas.py   # Pydantic 模型与字段级校验（extra=forbid、枚举白名单）
 │   │   ├── evaluate.py  # 联合裁决：直接成分 + 共线接触
 │   │   ├── compare.py   # 前后方案比较：复用 evaluate，按声明三态对比证据差集
+│   │   ├── changeover.py # 换线残留推演：批次序列、清洁归零、并集与最近来源
 │   │   └── main.py      # 路由、CORS、健康检查
-│   └── tests/           # pytest：规则矩阵 + HTTP 422 契约 + 前后方案比较
+│   └── tests/           # pytest：规则矩阵 + HTTP 422 契约 + 方案比较 + 残留推演
 ├── web/                 # React + Vite 前端
 │   ├── src/
 │   │   ├── types.ts            # 与后端一一对应的枚举、类型、空行工厂
 │   │   ├── api.ts              # 真实 fetch 调用与 422 字段错误映射
-│   │   ├── App.tsx             # 配方表 + 声明选择 + 提交 + 裁决呈现 + 对照快照/比较
-│   │   └── components/         # 配方表/声明选择/证据面板/比较面板/字段错误
-│   ├── e2e/*.spec.ts           # Playwright 真实联调端到端（裁决 + 前后方案比较）
+│   │   ├── App.tsx             # 放行台 + 换线残留推演两个并排独立模块
+│   │   └── components/         # 配方表/声明选择/证据面板/比较面板/换线模块/字段错误
+│   ├── e2e/*.spec.ts           # Playwright 真实联调端到端（裁决 + 比较 + 残留推演）
 │   └── src/**/*.test.ts(x)     # Vitest
 ├── verify/              # 一次性验收镜像构建与执行脚本
 ├── docker-compose.yml

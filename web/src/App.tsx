@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { ApiError, compareRelease, evaluateRelease } from "./api";
+import { ChangeoverPanel } from "./components/ChangeoverPanel";
 import { ClaimPicker } from "./components/ClaimPicker";
 import { ComparePanel } from "./components/ComparePanel";
 import { ErrorSummary } from "./components/ErrorSummary";
@@ -136,69 +137,79 @@ export default function App() {
 
   return (
     <div className="page">
-      <header>
-        <h1>包装放行台</h1>
-        <p className="subtitle">
-          直接成分与同组共线接触联合裁决：所有原料及共线标记均未命中目标项，声明方可放行。
-          麸质命中集合严格等于小麦、大麦、黑麦。
-        </p>
-      </header>
+      <div className="desk-grid">
+        <div className="desk-column" data-testid="release-desk">
+          <header>
+            <h1>包装放行台</h1>
+            <p className="subtitle">
+              直接成分与同组共线接触联合裁决：所有原料及共线标记均未命中目标项，声明方可放行。
+              麸质命中集合严格等于小麦、大麦、黑麦。
+            </p>
+          </header>
 
-      <form onSubmit={handleSubmit} noValidate>
-        <RecipeTable rows={rows} onChange={updateRow} onAdd={addRow} onRemove={removeRow} />
-        <ClaimPicker selected={claims} onToggle={toggleClaim} />
+          <form onSubmit={handleSubmit} noValidate>
+            <RecipeTable rows={rows} onChange={updateRow} onAdd={addRow} onRemove={removeRow} />
+            <ClaimPicker selected={claims} onToggle={toggleClaim} />
 
-        <div className="actions">
-          <button
-            type="button"
-            className="secondary"
-            onClick={snapshotBaseline}
-            disabled={!result || dirty}
-            title={
-              dirty ? "内容自上次裁决后已修改，请先重新提交裁决再设为对照" : undefined
-            }
-            data-testid="set-baseline"
-          >
-            设为对照
-          </button>
-          <button
-            type="button"
-            className="secondary"
-            onClick={handleCompare}
-            disabled={!baseline || comparing}
-            data-testid="compare"
-          >
-            {comparing ? "比较中…" : "比较改动"}
-          </button>
-          <button type="submit" disabled={submitting} data-testid="submit">
-            {submitting ? "裁决中…" : "提交裁决"}
-          </button>
+            <div className="actions">
+              <button
+                type="button"
+                className="secondary"
+                onClick={snapshotBaseline}
+                disabled={!result || dirty}
+                title={
+                  dirty ? "内容自上次裁决后已修改，请先重新提交裁决再设为对照" : undefined
+                }
+                data-testid="set-baseline"
+              >
+                设为对照
+              </button>
+              <button
+                type="button"
+                className="secondary"
+                onClick={handleCompare}
+                disabled={!baseline || comparing}
+                data-testid="compare"
+              >
+                {comparing ? "比较中…" : "比较改动"}
+              </button>
+              <button type="submit" disabled={submitting} data-testid="submit">
+                {submitting ? "裁决中…" : "提交裁决"}
+              </button>
+            </div>
+          </form>
+
+          {dirty && result && (
+            <p className="baseline-hint dirty-hint" role="alert" data-testid="dirty-hint">
+              配方或声明自上次裁决后已修改：请先重新“提交裁决”，再设为对照，避免把未经裁决的
+              内容保存成比较基准。
+            </p>
+          )}
+
+          {baseline && (
+            <p className="baseline-hint" data-testid="baseline-hint">
+              已保存对照快照：{baseline.ingredients.length} 行原料、{baseline.claims.length}{" "}
+              条声明。继续编辑上方表格后点击“比较改动”。
+            </p>
+          )}
+
+          {transportError && (
+            <section className="card error-summary" role="alert" data-testid="transport-error">
+              {transportError}
+            </section>
+          )}
+
+          <ErrorSummary errors={fieldErrors} />
+          {result && <ResultPanel result={result} />}
+          {comparison && <ComparePanel comparison={comparison} />}
         </div>
-      </form>
 
-      {dirty && result && (
-        <p className="baseline-hint dirty-hint" role="alert" data-testid="dirty-hint">
-          配方或声明自上次裁决后已修改：请先重新“提交裁决”，再设为对照，避免把未经裁决的
-          内容保存成比较基准。
-        </p>
-      )}
-
-      {baseline && (
-        <p className="baseline-hint" data-testid="baseline-hint">
-          已保存对照快照：{baseline.ingredients.length} 行原料、{baseline.claims.length}{" "}
-          条声明。继续编辑上方表格后点击“比较改动”。
-        </p>
-      )}
-
-      {transportError && (
-        <section className="card error-summary" role="alert" data-testid="transport-error">
-          {transportError}
-        </section>
-      )}
-
-      <ErrorSummary errors={fieldErrors} />
-      {result && <ResultPanel result={result} />}
-      {comparison && <ComparePanel comparison={comparison} />}
+        {/* 独立的换线残留推演模块：自管批次序列与清洁边界状态，
+            不与放行台的配方/裁决/对照状态共享。 */}
+        <div className="desk-column">
+          <ChangeoverPanel />
+        </div>
+      </div>
     </div>
   );
 }

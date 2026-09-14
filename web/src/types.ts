@@ -105,6 +105,51 @@ export interface FieldError {
   message: string;
 }
 
+// ---------------------------------------------------------------------------
+// 换线残留推演（独立模块：生产批次序列 + 相邻批次清洁边界）
+// ---------------------------------------------------------------------------
+
+export interface BatchInput {
+  name: string;
+  contains_milk: boolean;
+  contains_peanut: boolean;
+  contains_wheat: boolean;
+  contains_barley: boolean;
+  contains_rye: boolean;
+}
+
+export interface ChangeoverPayload {
+  batches: BatchInput[];
+  boundaries: { cleaned: boolean }[];
+}
+
+export interface ResidueItem {
+  target: Target;
+  source_batch_index: number;
+  source_batch_name: string;
+}
+
+export interface CleaningBoundaryReport {
+  boundary_index: number;
+  cleaned: boolean;
+  residue_cleared: boolean;
+}
+
+export interface BatchResidueReport {
+  batch_index: number;
+  name: string;
+  direct_ingredients: Target[];
+  incoming_residue: ResidueItem[];
+  carried_over: ResidueItem[];
+  outgoing_residue: ResidueItem[];
+  cleaned_before: boolean | null;
+}
+
+export interface ChangeoverResponse {
+  batches: BatchResidueReport[];
+  boundaries: CleaningBoundaryReport[];
+}
+
 export const DIRECT_FLAGS = [
   "contains_milk",
   "contains_peanut",
@@ -134,5 +179,17 @@ export function emptyRow(name = ""): IngredientRow {
     contact_wheat: false,
     contact_barley: false,
     contact_rye: false,
+  };
+}
+
+// 换线推演中的批次只有五类直接成分（无共线接触标记）
+export function emptyBatch(name = ""): BatchInput {
+  return {
+    name,
+    contains_milk: false,
+    contains_peanut: false,
+    contains_wheat: false,
+    contains_barley: false,
+    contains_rye: false,
   };
 }

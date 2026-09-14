@@ -264,3 +264,92 @@ button.danger {
   margin-top: 0;
   font-size: 16px;
 }
+
+/* ---------------------------------------------------------------------------
+   放行台与换线残留推演：两个独立模块并排（窄屏自动堆叠）
+--------------------------------------------------------------------------- */
+.desk-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 24px;
+  align-items: start;
+}
+
+.changeover-module header h2 {
+  margin-bottom: 4px;
+}
+
+.co-table .co-order-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+}
+
+.co-boundary-row td {
+  background: #f4f6f8;
+  padding: 6px 12px;
+}
+
+.co-boundary-label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.co-batch-report {
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 10px 14px;
+  margin: 10px 0;
+}
+
+.co-batch-report h3 {
+  margin: 4px 0 8px;
+  font-size: 15px;
+}
+
+.co-batch-report h4 {
+  margin: 6px 0 2px;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.co-residue-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 4px 20px;
+}
+
+.residue-list {
+  margin: 0;
+  padding-left: 18px;
+}
+
+.residue-source {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.residue-empty {
+  color: var(--muted);
+  list-style: none;
+  margin-left: -18px;
+}
+
+.clean-badge {
+  margin: 0 0 6px;
+  padding: 4px 10px;
+  border-left: 4px solid var(--pass-border);
+  background: var(--pass-bg);
+  border-radius: 4px;
+  font-size: 13px;
+}
+
+@media (max-width: 1080px) {
+  .desk-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}

@@ -1,14 +1,22 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from .changeover import simulate
 from .compare import compare
 from .evaluate import evaluate
-from .schemas import CompareRequest, CompareResponse, ReleaseRequest, ReleaseResponse
+from .schemas import (
+    ChangeoverRequest,
+    ChangeoverResponse,
+    CompareRequest,
+    CompareResponse,
+    ReleaseRequest,
+    ReleaseResponse,
+)
 
 app = FastAPI(
     title="包装放行台 API",
     description="基于直接成分与同组共线接触的“不含”声明放行裁决服务",
-    version="1.0.0",
+    version="1.1.0",
 )
 
 # 本地 Vite 开发服务器联调需要跨域；生产由 Nginx 同源反代
@@ -39,3 +47,14 @@ def compare_plans(request: CompareRequest) -> CompareResponse:
     且不产生任何比较结果。
     """
     return compare(request)
+
+
+@app.post("/api/changeover", response_model=ChangeoverResponse)
+def changeover(request: ChangeoverRequest) -> ChangeoverResponse:
+    """换线残留推演：按生产批次序列逐批给出进入残留、前序带入与离开残留。
+
+    经验证清洁在下一批开始前清空残留；批次数量不足、名称空白或重复、
+    清洁边界缺失/长度不符、成分标记非布尔均返回 422 字段级错误，
+    loc 定位到具体批次或边界，且不产生推演结果。
+    """
+    return simulate(request)

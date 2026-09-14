@@ -1,4 +1,6 @@
 import type {
+  ChangeoverPayload,
+  ChangeoverResponse,
   Claim,
   CompareResponse,
   FieldError,
@@ -93,4 +95,9 @@ export function compareRelease(
   current: ReleasePlan,
 ): Promise<CompareResponse> {
   return post<CompareResponse>("/api/compare", { baseline, current });
+}
+
+// 换线残留推演：提交生产批次序列与相邻批次清洁边界，逐批返回残留与来源
+export function simulateChangeover(payload: ChangeoverPayload): Promise<ChangeoverResponse> {
+  return post<ChangeoverResponse>("/api/changeover", payload);
 }
