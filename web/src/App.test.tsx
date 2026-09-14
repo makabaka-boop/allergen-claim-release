@@ -433,6 +433,98 @@ describe("前后方案影响比较", () => {
     expect(screen.getByTestId("compare")).toBeEnabled();
   });
 
+  it("裁决后修改内容：未经重新裁决不能设为对照，重新裁决后恢复", async () => {
+    mockFetchRouter({
+      "/api/evaluate": () => jsonResponse(evaluateBody()),
+    });
+    const user = userEvent.setup();
+    render(<App />);
+    await submitAndSetBaseline(user, "燕麦粉", ["gluten_free"]);
+
+    // 已完成裁决并设过对照；此后改动表格但不重新提交
+    await user.click(screen.getByTestId("row-0-contact-peanut"));
+    const setBaseline = screen.getByTestId("set-baseline");
+    await waitFor(() => expect(setBaseline).toBeDisabled());
+    expect(screen.getByTestId("dirty-hint")).toBeInTheDocument();
+    // 已保存的对照仍可用于比较，比较按钮不受影响
+    expect(screen.getByTestId("compare")).toBeEnabled();
+
+    // 重新提交裁决后，当前内容才重新具备设对照资格
+    await user.click(screen.getByTestId("submit"));
+    await waitFor(() => expect(setBaseline).toBeEnabled());
+    expect(screen.queryByTestId("dirty-hint")).not.toBeInTheDocument();
+  });
+
+  it("裁决失败（422）后仍是脏状态，不能把未裁决内容设为对照", async () => {
+    let attempts = 0;
+    mockFetchRouter({
+      "/api/evaluate": () => {
+        attempts += 1;
+        return attempts === 1
+          ? jsonResponse(evaluateBody())
+          : jsonResponse(
+              {
+                detail: [
+                  {
+                    loc: ["body", "ingredients", 0, "contact_milk"],
+                    msg: "Field required",
+                    type: "missing",
+                  },
+                ],
+              },
+              422,
+            );
+      },
+    });
+    const user = userEvent.setup();
+    render(<App />);
+    await submitAndSetBaseline(user, "燕麦粉", ["gluten_free"]);
+
+    await user.click(screen.getByTestId("row-0-contact-peanut"));
+    await waitFor(() => expect(screen.getByTestId("set-baseline")).toBeDisabled());
+    await user.click(screen.getByTestId("submit"));
+    await waitFor(() => expect(screen.getByTestId("field-error-0")).toBeInTheDocument());
+    // 422 未产生裁决：依然不能设对照
+    expect(screen.getByTestId("set-baseline")).toBeDisabled();
+  });
+
+  it("两侧没有共同选择的声明时比较面板显示空态，不把取消声明标为已解除", async () => {
+    const compareBody: CompareResponse = {
+      baseline: evaluateBody({
+        printable: false,
+        rows: [{ ...CLEAN_ROW, name: "全脂奶粉", direct_hits: ["milk"] }],
+        verdicts: [
+          {
+            claim: "milk_free",
+            allowed: false,
+            blocked_by: [
+              { row_index: 0, ingredient_name: "全脂奶粉", target: "milk", source: "direct" },
+            ],
+          },
+        ],
+      }),
+      current: evaluateBody({
+        rows: [{ ...CLEAN_ROW, name: "全脂奶粉" }],
+        verdicts: [{ claim: "gluten_free", allowed: true, blocked_by: [] }],
+      }),
+      comparisons: [],
+    };
+    mockFetchRouter({
+      "/api/evaluate": () => jsonResponse(evaluateBody()),
+      "/api/compare": () => jsonResponse(compareBody),
+    });
+
+    const user = userEvent.setup();
+    render(<App />);
+    await submitAndSetBaseline(user, "燕麦粉", ["gluten_free"]);
+    await user.click(screen.getByTestId("compare"));
+
+    await waitFor(() => expect(screen.getByTestId("compare-panel")).toBeInTheDocument());
+    expect(screen.getByTestId("compare-empty")).toHaveTextContent("共同选择的声明");
+    expect(screen.queryByTestId("compare-milk_free")).not.toBeInTheDocument();
+    expect(screen.queryByText("已解除")).not.toBeInTheDocument();
+  });
+
   it("非法现方案：按现方案路径显示字段错误且不产生比较结果", async () => {
     mockFetchRouter({
       "/api/evaluate": () => jsonResponse(evaluateBody()),

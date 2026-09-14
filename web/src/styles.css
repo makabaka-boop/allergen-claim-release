@@ -235,6 +235,15 @@ button.danger {
   text-align: right;
 }
 
+.dirty-hint {
+  padding: 10px 14px;
+  text-align: left;
+  color: var(--block-border);
+  background: var(--block-bg);
+  border: 1px solid var(--block-border);
+  border-radius: 6px;
+}
+
 .claim-title {
   display: flex;
   justify-content: space-between;

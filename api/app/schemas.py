@@ -41,6 +41,8 @@ class IngredientInput(BaseModel):
 class ReleaseRequest(BaseModel):
     """放行裁决请求：至少一条原料、至少一条声明。"""
 
+    model_config = {"extra": "forbid"}
+
     ingredients: list[IngredientInput] = Field(
         ..., min_length=1, description="配方原料行，空配方（含空数组）一律拒绝"
     )
@@ -105,6 +107,8 @@ class CompareRequest(BaseModel):
     任一侧字段非法时，422 的 loc 会带上 baseline/current 前缀，
     按对照或现方案路径精确定位，且不产生任何比较结果。
     """
+
+    model_config = {"extra": "forbid"}
 
     baseline: ReleaseRequest = Field(..., description="对照方案（已保存的快照）")
     current: ReleaseRequest = Field(..., description="现方案（当前编辑内容）")

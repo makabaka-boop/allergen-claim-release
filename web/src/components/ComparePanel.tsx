@@ -22,6 +22,12 @@ export function ComparePanel({ comparison }: ComparePanelProps) {
   return (
     <section className="card" aria-live="polite" data-testid="compare-panel">
       <h2>前后方案影响比较（对照 → 现方案）</h2>
+      {comparison.comparisons.length === 0 && (
+        <p className="clean" data-testid="compare-empty">
+          两侧没有共同选择的声明：取消勾选的声明不会按“放行”参与比较，请勾选共同关注的声明后
+          再比较。
+        </p>
+      )}
       <div className="claim-verdicts">
         {comparison.comparisons.map((item) => (
           <div

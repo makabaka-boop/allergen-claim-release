@@ -26,15 +26,23 @@ export default function App() {
   const [baseline, setBaseline] = useState<ReleasePlan | null>(null);
   const [comparison, setComparison] = useState<CompareResponse | null>(null);
   const [comparing, setComparing] = useState(false);
+  // 当前表格内容是否相对最近一次成功裁决发生过改动：
+  // 未经裁决的内容不能保存为对照，必须先重新提交裁决
+  const [dirty, setDirty] = useState(false);
 
   const updateRow = (index: number, row: IngredientRow) => {
     setRows((current) => current.map((item, i) => (i === index ? row : item)));
+    setDirty(true);
   };
 
-  const addRow = () => setRows((current) => [...current, emptyRow()]);
+  const addRow = () => {
+    setRows((current) => [...current, emptyRow()]);
+    setDirty(true);
+  };
 
   const removeRow = (index: number) => {
     setRows((current) => current.filter((_, i) => i !== index));
+    setDirty(true);
   };
 
   const toggleClaim = (claim: Claim) => {
@@ -43,6 +51,7 @@ export default function App() {
         ? current.filter((item) => item !== claim)
         : [...current, claim],
     );
+    setDirty(true);
   };
 
   const resetOutcome = () => {
@@ -76,6 +85,8 @@ export default function App() {
     try {
       const response = await evaluateRelease(rows, claims);
       setResult(response);
+      // 当前内容已完成裁决：重新具备“设为对照”的资格
+      setDirty(false);
     } catch (error) {
       if (error instanceof ApiError) {
         setFieldErrors(error.fieldErrors);
@@ -142,7 +153,10 @@ export default function App() {
             type="button"
             className="secondary"
             onClick={snapshotBaseline}
-            disabled={!result}
+            disabled={!result || dirty}
+            title={
+              dirty ? "内容自上次裁决后已修改，请先重新提交裁决再设为对照" : undefined
+            }
             data-testid="set-baseline"
           >
             设为对照
@@ -161,6 +175,13 @@ export default function App() {
           </button>
         </div>
       </form>
+
+      {dirty && result && (
+        <p className="baseline-hint dirty-hint" role="alert" data-testid="dirty-hint">
+          配方或声明自上次裁决后已修改：请先重新“提交裁决”，再设为对照，避免把未经裁决的
+          内容保存成比较基准。
+        </p>
+      )}
 
       {baseline && (
         <p className="baseline-hint" data-testid="baseline-hint">

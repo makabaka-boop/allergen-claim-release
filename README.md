@@ -66,7 +66,8 @@
 - 空配方（`ingredients` 缺失或为空数组）、空声明列表；
 - 任一直接成分/共线标记缺失或为 `null`、非布尔值；
 - 原料名称为空白；
-- 出现目标集合之外的额外字段（如 `contains_gluten`，模型 `extra=forbid`）。
+- 出现未定义的额外字段（如原料行的 `contains_gluten`，或请求/方案层的 `snapshot_id`；
+  各层模型均 `extra=forbid`）。
 
 ### 响应（合法请求，HTTP 200）
 
@@ -133,12 +134,18 @@
 ```
 
 - `baseline` / `current`：两侧各自的完整裁决结果（结构与 `/api/evaluate` 响应一致）。
-- `comparisons`：按声明给出三态之一——`newly_blocked`（新受阻）、`resolved`
-  （已解除）、`unchanged`（未变化）；`new_blockers` / `resolved_blockers` 为只存在于
-  一侧的阻断证据（按行号 + 目标项 + 来源求差集，原料改名不产生伪差异）。
-- 任一方案字段非法时同样返回 422 字段级错误，`loc` 以 `baseline` / `current`
-  前缀定位到对应方案（如 `body.current.ingredients.0.contact_wheat`），且不产生
-  任何比较结果；前端连接失败时保留对照快照与编辑内容，可直接重试。
+- `comparisons`：只包含**两侧都选择**的声明（按对照方案顺序），逐条给出三态之一——
+  `newly_blocked`（新受阻）、`resolved`（已解除）、`unchanged`（未变化）。仅一侧选择
+  的声明不参与三态对比：取消一条声明不等于该声明“放行”，原本受阻的声明取消勾选后
+  不会被报成“已解除”。
+- `new_blockers` / `resolved_blockers` 为只存在于一侧的阻断证据：先按原料名做最长公共
+  子序列对齐两侧原料行，再在配对行之间按目标项 + 来源求差集。因此在前面插入/删除无关
+  原料（行号整体平移）不会让同一证据同时显示为新增与解除，原料改名也不产生伪差异。
+- 任一方案字段非法时同样返回 422 字段级错误（方案层、请求层与原料行均
+  `extra=forbid`，未定义字段如 `baseline.snapshot_id` 也会被拒绝），`loc` 以
+  `baseline` / `current` 前缀定位到对应方案
+  （如 `body.current.ingredients.0.contact_wheat`），且不产生任何比较结果；前端连接
+  失败时保留对照快照与编辑内容，可直接重试。
 
 另有 `GET /health` 返回 `{"status":"ok"}`，供健康检查与验收使用。
 

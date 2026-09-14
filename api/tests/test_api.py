@@ -174,3 +174,13 @@ def test_unknown_target_boolean_does_not_exist() -> None:
     assert response.status_code == 422
     locations = [tuple(err["loc"]) for err in response.json()["detail"]]
     assert any(loc[-1] == "contains_gluten" for loc in locations)
+
+
+def test_top_level_extra_field_returns_field_error() -> None:
+    # 请求层同样 extra=forbid：方案级/请求级未定义字段不被静默接受
+    payload = make_request()
+    payload["snapshot_id"] = "abc"
+    response = client.post("/api/evaluate", json=payload)
+    assert response.status_code == 422
+    locations = [tuple(err["loc"]) for err in response.json()["detail"]]
+    assert ("body", "snapshot_id") in locations
