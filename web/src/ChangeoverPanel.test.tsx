@@ -14,13 +14,20 @@ function jsonResponse(body: unknown, status = 200): Response {
 const TARGET_ORDER = ["milk", "peanut", "wheat", "barley", "rye"] as const;
 type TargetName = (typeof TARGET_ORDER)[number];
 
-// 按后端固定规则构造响应：未清洁时离开残留=进入残留∪直接成分，
-// 经验证清洁清空；带入物仅取本批未直接含有的进入残留；来源保留最近批次。
+type CleaningChoice =
+  | { mode: "uncleaned" }
+  | { mode: "full" }
+  | { mode: "partial"; cleared: TargetName[] };
+
+// 按后端固定规则构造响应：全部清洁清空；局部清洁仅移除指定目标，
+// 未清洁时离开残留=进入残留∪直接成分；带入物仅取本批未直接含有的进入残留；
+// 来源保留最近批次。
 function buildChangeoverResponse(
   batches: { name: string; direct: TargetName[] }[],
-  cleaned: boolean[],
+  cleaning: CleaningChoice[],
 ): ChangeoverResponse {
   let incoming: ResidueItem[] = [];
+  const allTargets = [...TARGET_ORDER];
   const reports = batches.map((batch, index) => {
     const directSet = new Set(batch.direct);
     const carried = incoming.filter((item) => !directSet.has(item.target as TargetName));
@@ -38,6 +45,7 @@ function buildChangeoverResponse(
     outgoing.sort(
       (a, b) => TARGET_ORDER.indexOf(a.target as TargetName) - TARGET_ORDER.indexOf(b.target as TargetName),
     );
+    const choice = index === 0 ? null : (cleaning[index - 1] ?? { mode: "uncleaned" });
     const report = {
       batch_index: index,
       name: batch.name,
@@ -45,24 +53,40 @@ function buildChangeoverResponse(
       incoming_residue: incoming,
       carried_over: carried,
       outgoing_residue: outgoing,
-      cleaned_before: index === 0 ? null : cleaned[index - 1],
+      cleaned_before: index === 0 ? null : choice?.mode === "full",
     };
-    incoming = cleaned[index] ? [] : outgoing;
+    const boundary = cleaning[index];
+    if (boundary?.mode === "full") incoming = [];
+    else if (boundary?.mode === "partial") {
+      const removed = new Set(boundary.cleared);
+      incoming = outgoing.filter((item) => !removed.has(item.target as TargetName));
+    } else incoming = outgoing;
     return report;
   });
   return {
     batches: reports,
-    boundaries: cleaned.map((flag, index) => ({
+    boundaries: cleaning.map((choice, index) => ({
       boundary_index: index,
-      cleaned: flag,
-      residue_cleared: flag,
+      cleaned: choice.mode === "full",
+      residue_cleared: choice.mode === "full",
+      cleared_targets:
+        choice.mode === "full"
+          ? allTargets
+          : choice.mode === "partial"
+            ? TARGET_ORDER.filter((t) => choice.cleared.includes(t))
+            : [],
     })),
   };
 }
 
+interface RawBoundary {
+  cleaned: boolean;
+  cleared_targets?: string[];
+}
+
 // 记录每次请求体的 fetch 打桩，默认按“真实推演语义”生成响应，可按用例覆盖
 function mockSimulation(
-  override?: (payload: { batches: { name: string }[]; boundaries: { cleaned: boolean }[] }) => Response,
+  override?: (payload: { batches: { name: string }[]; boundaries: RawBoundary[] }) => Response,
 ) {
   const calls: unknown[] = [];
   const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -72,17 +96,21 @@ function mockSimulation(
     calls.push(payload);
     if (override) return override(payload as never);
     const typed = payload as {
-      batches: { name: string; contains_peanut?: boolean; contains_wheat?: boolean }[];
-      boundaries: { cleaned: boolean }[];
+      batches: { name: string; [flag: string]: string | boolean | undefined }[];
+      boundaries: RawBoundary[];
     };
     const batches = typed.batches.map((b) => ({
       name: b.name,
-      direct: [
-        ...(b.contains_peanut ? (["peanut"] as TargetName[]) : []),
-        ...(b.contains_wheat ? (["wheat"] as TargetName[]) : []),
-      ],
+      direct: TARGET_ORDER.filter((t) => b[`contains_${t}`] === true),
     }));
-    return jsonResponse(buildChangeoverResponse(batches, typed.boundaries.map((x) => x.cleaned)));
+    const cleaning: CleaningChoice[] = typed.boundaries.map((boundary) => {
+      if (boundary.cleaned) return { mode: "full" };
+      if (boundary.cleared_targets && boundary.cleared_targets.length > 0) {
+        return { mode: "partial", cleared: boundary.cleared_targets as TargetName[] };
+      }
+      return { mode: "uncleaned" };
+    });
+    return jsonResponse(buildChangeoverResponse(batches, cleaning));
   });
   vi.stubGlobal("fetch", fetchMock);
   return { fetchMock, calls };
@@ -154,8 +182,8 @@ describe("换线残留推演：提交与逐批结果", () => {
     await user.click(screen.getByTestId("co-batch-0-contains-peanut"));
     await user.click(screen.getByTestId("co-batch-0-contains-wheat"));
     await user.type(screen.getByTestId("co-batch-1-name"), "清洁后B");
-    // 标记两批之间已完成经验证清洁
-    await user.click(screen.getByTestId("co-boundary-0-cleaned"));
+    // 标记两批之间已完成全部经验证清洁
+    await user.click(screen.getByTestId("co-boundary-0-mode-full"));
     await user.click(screen.getByTestId("co-submit"));
 
     await waitFor(() => expect(screen.getByTestId("co-result")).toBeInTheDocument());
@@ -188,6 +216,93 @@ describe("换线残留推演：提交与逐批结果", () => {
       contains_barley: true,
       contains_rye: false,
     });
+  });
+
+  it("局部清洁：仅清除花生，牛奶保留最近来源继续带入后续批次", async () => {
+    const { calls } = mockSimulation();
+    const user = userEvent.setup();
+    render(<ChangeoverPanel />);
+
+    await user.type(screen.getByTestId("co-batch-0-name"), "奶糖A");
+    await user.click(screen.getByTestId("co-batch-0-contains-milk"));
+    await user.click(screen.getByTestId("co-batch-0-contains-peanut"));
+    await user.type(screen.getByTestId("co-batch-1-name"), "中转B");
+    // 边界选择“局部清洁”并只勾选花生
+    await user.click(screen.getByTestId("co-boundary-0-mode-partial"));
+    expect(screen.getByTestId("co-boundary-0-targets")).toBeInTheDocument();
+    await user.click(screen.getByTestId("co-boundary-0-target-peanut"));
+    await user.click(screen.getByTestId("co-add-batch"));
+    await user.type(screen.getByTestId("co-batch-2-name"), "末批C");
+    await user.click(screen.getByTestId("co-submit"));
+
+    await waitFor(() => expect(screen.getByTestId("co-result")).toBeInTheDocument());
+
+    // 第 2 批进入残留只有牛奶，花生已被局部清除
+    expect(screen.getByTestId("co-batch-1-incoming-milk")).toHaveTextContent("奶糖A");
+    expect(screen.queryByTestId("co-batch-1-incoming-peanut")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("co-batch-1-carried-peanut")).not.toBeInTheDocument();
+    // 第 2 批不是全部清洁：不显示全部清洁徽标，cleaned_before 为 false
+    expect(screen.queryByTestId("co-batch-1-cleaned")).not.toBeInTheDocument();
+    // 牛奶继续携带最近来源到第 3 批
+    expect(screen.getByTestId("co-batch-2-incoming-milk")).toHaveTextContent(
+      "来源：第 1 批「奶糖A」",
+    );
+    expect(screen.queryByTestId("co-batch-2-incoming-peanut")).not.toBeInTheDocument();
+
+    // 边界结果确认实际清除项仅花生
+    expect(screen.getByTestId("co-boundary-report-0")).toHaveTextContent("局部清洁");
+    expect(screen.getByTestId("co-boundary-report-0-target-peanut")).toBeInTheDocument();
+    expect(
+      screen.queryByTestId("co-boundary-report-0-target-milk"),
+    ).not.toBeInTheDocument();
+    expect(screen.getByTestId("co-boundary-report-1-targets")).toHaveTextContent("无确认清除项");
+
+    // 请求体：cleaned=false + cleared_targets=['peanut']；第二条边界保持旧语义
+    const payload = calls[0] as {
+      boundaries: { cleaned: boolean; cleared_targets?: string[] }[];
+    };
+    expect(payload.boundaries[0]).toEqual({ cleaned: false, cleared_targets: ["peanut"] });
+    expect(payload.boundaries[1]).toEqual({ cleaned: false });
+  });
+
+  it("局部清洁下被保留目标与本批直接成分求并集，离开残留保留各来源", async () => {
+    mockSimulation();
+    const user = userEvent.setup();
+    render(<ChangeoverPanel />);
+
+    await user.type(screen.getByTestId("co-batch-0-name"), "A批");
+    await user.click(screen.getByTestId("co-batch-0-contains-peanut"));
+    await user.click(screen.getByTestId("co-batch-0-contains-wheat"));
+    await user.type(screen.getByTestId("co-batch-1-name"), "B批");
+    await user.click(screen.getByTestId("co-batch-1-contains-milk"));
+    await user.click(screen.getByTestId("co-boundary-0-mode-partial"));
+    await user.click(screen.getByTestId("co-boundary-0-target-peanut"));
+    await user.click(screen.getByTestId("co-submit"));
+
+    await waitFor(() => expect(screen.getByTestId("co-result")).toBeInTheDocument());
+    // 花生被清除；小麦保留为带入；牛奶是本批直接成分
+    expect(screen.queryByTestId("co-batch-1-incoming-peanut")).not.toBeInTheDocument();
+    expect(screen.getByTestId("co-batch-1-incoming-wheat")).toHaveTextContent("A批");
+    expect(screen.getByTestId("co-batch-1-outgoing-wheat")).toHaveTextContent("A批");
+    expect(screen.getByTestId("co-batch-1-outgoing-milk")).toHaveTextContent("B批");
+  });
+
+  it("切换清洁方式会显隐清除目标勾选区，切走局部清洁不携带陈旧清除目标", async () => {
+    const { calls } = mockSimulation();
+    const user = userEvent.setup();
+    render(<ChangeoverPanel />);
+
+    await user.type(screen.getByTestId("co-batch-0-name"), "A批");
+    await user.type(screen.getByTestId("co-batch-1-name"), "B批");
+    await user.click(screen.getByTestId("co-boundary-0-mode-partial"));
+    await user.click(screen.getByTestId("co-boundary-0-target-peanut"));
+    // 切到未清洁：勾选区隐藏，提交载荷不含 cleared_targets
+    await user.click(screen.getByTestId("co-boundary-0-mode-uncleaned"));
+    expect(screen.queryByTestId("co-boundary-0-targets")).not.toBeInTheDocument();
+    await user.click(screen.getByTestId("co-submit"));
+    await waitFor(() => expect(screen.getByTestId("co-result")).toBeInTheDocument());
+    const firstPayload = calls[0] as { boundaries: Record<string, unknown>[] };
+    expect(firstPayload.boundaries[0]).toEqual({ cleaned: false });
   });
 });
 
@@ -262,23 +377,24 @@ describe("换线残留推演：字段错误保留输入并可修正后再次提�
     expect(calls).toHaveLength(1);
   });
 
-  it("后端 422：按批次/边界定位显示，输入保留，修正后再次提交", async () => {    let attempts = 0;
+  it("后端 422：按批次/边界定位显示，输入保留，修正后再次提交", async () => {
+    let attempts = 0;
     mockSimulation(() => {
       attempts += 1;
       if (attempts === 1) {
         return jsonResponse({
           detail: [
             {
-              loc: ["body", "boundaries", 0, "cleaned"],
-              msg: "Input should be a valid boolean",
-              type: "bool_type",
+              loc: ["body", "boundaries", 0, "cleared_targets"],
+              msg: "清除目标存在重复项：peanut",
+              type: "value_error",
             },
           ],
         }, 422);
       }
       return jsonResponse(buildChangeoverResponse(
         [{ name: "A", direct: [] }, { name: "B", direct: [] }],
-        [true],
+        [{ mode: "uncleaned" }],
       ));
     });
     const user = userEvent.setup();
@@ -289,7 +405,7 @@ describe("换线残留推演：字段错误保留输入并可修正后再次提�
 
     await waitFor(() =>
       expect(screen.getByTestId("co-field-error-0")).toHaveTextContent(
-        "第 1 批与第 2 批之间的经验证清洁标记",
+        "局部清洁的清除目标",
       ),
     );
     expect(screen.queryByTestId("co-result")).not.toBeInTheDocument();
@@ -299,6 +415,86 @@ describe("换线残留推演：字段错误保留输入并可修正后再次提�
     // 直接再次提交（第二次打桩返回成功）
     await user.click(screen.getByTestId("co-submit"));
     await waitFor(() => expect(screen.getByTestId("co-result")).toBeInTheDocument());
+  });
+
+  it("局部清洁未选任何目标：前端拦截并保留选择，勾选后直接重试成功", async () => {
+    const { calls, fetchMock } = mockSimulation();
+    const user = userEvent.setup();
+    render(<ChangeoverPanel />);
+
+    await user.type(screen.getByTestId("co-batch-0-name"), "奶糖A");
+    await user.type(screen.getByTestId("co-batch-1-name"), "B批");
+    await user.click(screen.getByTestId("co-boundary-0-mode-partial"));
+    // 不勾选任何清除目标直接提交
+    await user.click(screen.getByTestId("co-submit"));
+
+    await waitFor(() =>
+      expect(screen.getByTestId("co-field-error-0")).toHaveTextContent("局部清洁"),
+    );
+    expect(screen.getByTestId("co-field-error-0")).toHaveTextContent("清除目标");
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(screen.queryByTestId("co-result")).not.toBeInTheDocument();
+    // 批次与清洁选择（局部清洁单选 + 勾选区）均保留
+    expect(screen.getByTestId("co-batch-0-name")).toHaveValue("奶糖A");
+    expect(screen.getByTestId("co-boundary-0-mode-partial")).toBeChecked();
+    expect(screen.getByTestId("co-boundary-0-targets")).toBeInTheDocument();
+
+    // 勾选花生后直接重试
+    await user.click(screen.getByTestId("co-boundary-0-target-peanut"));
+    await user.click(screen.getByTestId("co-submit"));
+    await waitFor(() => expect(screen.getByTestId("co-result")).toBeInTheDocument());
+    expect(screen.queryByTestId("co-field-error-0")).not.toBeInTheDocument();
+    expect(calls).toHaveLength(1);
+  });
+
+  it("后端拒绝局部清洁请求：保留批次与清洁选择，修正勾选后重试成功", async () => {
+    let attempts = 0;
+    mockSimulation((payload) => {
+      attempts += 1;
+      const boundary = (payload as { boundaries: RawBoundary[] }).boundaries[0];
+      // 模拟后端对局部清洁边界的字段级拒绝（如清除目标为空/重复），且不产生结果
+      if (attempts === 1 && boundary.cleared_targets?.[0] === "peanut") {
+        return jsonResponse({
+          detail: [
+            {
+              loc: ["body", "boundaries", 0, "cleared_targets"],
+              msg: "清除目标存在重复项：peanut",
+              type: "value_error",
+            },
+          ],
+        }, 422);
+      }
+      return jsonResponse(
+        buildChangeoverResponse(
+          [{ name: "A", direct: [] }, { name: "B", direct: [] }],
+          [{ mode: "partial", cleared: ["wheat"] }],
+        ),
+      );
+    });
+    const user = userEvent.setup();
+    render(<ChangeoverPanel />);
+    await user.type(screen.getByTestId("co-batch-0-name"), "A");
+    await user.type(screen.getByTestId("co-batch-1-name"), "B");
+    await user.click(screen.getByTestId("co-boundary-0-mode-partial"));
+    await user.click(screen.getByTestId("co-boundary-0-target-peanut"));
+    await user.click(screen.getByTestId("co-submit"));
+
+    await waitFor(() =>
+      expect(screen.getByTestId("co-field-error-0")).toHaveTextContent("清除目标"),
+    );
+    expect(screen.queryByTestId("co-result")).not.toBeInTheDocument();
+    // 批次输入与局部清洁选择（含勾选状态）全部保留，可直接修正
+    expect(screen.getByTestId("co-batch-1-name")).toHaveValue("B");
+    expect(screen.getByTestId("co-boundary-0-mode-partial")).toBeChecked();
+    expect(screen.getByTestId("co-boundary-0-target-peanut")).toBeChecked();
+
+    // 改为只清除小麦后直接重试
+    await user.click(screen.getByTestId("co-boundary-0-target-peanut"));
+    await user.click(screen.getByTestId("co-boundary-0-target-wheat"));
+    await user.click(screen.getByTestId("co-submit"));
+    await waitFor(() => expect(screen.getByTestId("co-result")).toBeInTheDocument());
+    expect(screen.queryByTestId("co-field-error-0")).not.toBeInTheDocument();
+    expect(screen.getByTestId("co-boundary-report-0-target-wheat")).toBeInTheDocument();
   });
 });
 
@@ -340,8 +536,8 @@ describe("换线残留推演：调整顺序后重新推演", () => {
     render(<ChangeoverPanel />); // 初始 2 批 1 边界
 
     await user.click(screen.getByTestId("co-add-batch")); // 3 批 2 边界
-    await user.click(screen.getByTestId("co-boundary-0-cleaned"));
-    await user.click(screen.getByTestId("co-boundary-1-cleaned"));
+    await user.click(screen.getByTestId("co-boundary-0-mode-full"));
+    await user.click(screen.getByTestId("co-boundary-1-mode-full"));
     await user.type(screen.getByTestId("co-batch-0-name"), "A");
     await user.type(screen.getByTestId("co-batch-1-name"), "B");
     await user.type(screen.getByTestId("co-batch-2-name"), "C");
@@ -370,8 +566,8 @@ describe("换线残留推演：调整顺序后重新推演", () => {
       expect(screen.getByTestId("co-batch-1-incoming-peanut")).toBeInTheDocument(),
     );
 
-    // 标记经验证清洁后重新推演
-    await user.click(screen.getByTestId("co-boundary-0-cleaned"));
+    // 标记全部清洁后重新推演
+    await user.click(screen.getByTestId("co-boundary-0-mode-full"));
     expect(screen.queryByTestId("co-result")).not.toBeInTheDocument();
     await user.click(screen.getByTestId("co-submit"));
     await waitFor(() => expect(screen.getByTestId("co-result")).toBeInTheDocument());

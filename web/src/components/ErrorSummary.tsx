@@ -58,7 +58,7 @@ function humanizeField(field: string): string {
     return `第 ${batchNumber} 批字段 ${rest}`;
   }
 
-  // 换线推演：boundaries[i].cleaned
+  // 换线推演：boundaries[i].cleaned / boundaries[i].cleared_targets[?]
   const boundaryMatch = field.match(/^boundaries\[(\d+)\](?:\.(.+))?$/);
   if (boundaryMatch) {
     // 边界 i 位于第 i+1 批与第 i+2 批之间
@@ -66,6 +66,9 @@ function humanizeField(field: string): string {
     const rest = boundaryMatch[2];
     if (!rest || rest === "cleaned") {
       return `第 ${left} 批与第 ${left + 1} 批之间的经验证清洁标记`;
+    }
+    if (rest === "cleared_targets" || rest.startsWith("cleared_targets[")) {
+      return `第 ${left} 批与第 ${left + 1} 批之间局部清洁的清除目标`;
     }
     return `第 ${left} 批与第 ${left + 1} 批之间清洁边界字段 ${rest}`;
   }

@@ -22,10 +22,20 @@ def make_batch(name: str = "批次", **flags: bool) -> dict:
     return payload
 
 
-def make_request(batches: list[dict], cleaned: list[bool] | None = None) -> dict:
+def make_request(
+    batches: list[dict],
+    cleaned: list[bool] | None = None,
+    cleared: list[list[str] | None] | None = None,
+) -> dict:
     if cleaned is None:
         cleaned = [False] * (len(batches) - 1)
-    return {"batches": batches, "boundaries": [{"cleaned": flag} for flag in cleaned]}
+    boundaries: list[dict] = []
+    for index, flag in enumerate(cleaned):
+        boundary = {"cleaned": flag}
+        if cleared is not None and index < len(cleared) and cleared[index] is not None:
+            boundary["cleared_targets"] = cleared[index]
+        boundaries.append(boundary)
+    return {"batches": batches, "boundaries": boundaries}
 
 
 def post_changeover(payload: dict):
@@ -138,7 +148,12 @@ def test_validated_cleaning_clears_residue_before_next_batch_starts() -> None:
     assert batches[1]["incoming_residue"] == []
     assert batches[1]["carried_over"] == []
     assert batches[1]["outgoing_residue"] == []
-    assert boundary == {"boundary_index": 0, "cleaned": True, "residue_cleared": True}
+    assert boundary == {
+        "boundary_index": 0,
+        "cleaned": True,
+        "residue_cleared": True,
+        "cleared_targets": ["milk", "peanut", "wheat", "barley", "rye"],
+    }
 
 
 def test_uncleaned_boundary_keeps_residue_and_is_reported_as_not_cleared() -> None:
@@ -147,7 +162,12 @@ def test_uncleaned_boundary_keeps_residue_and_is_reported_as_not_cleared() -> No
     )
     response = post_changeover(payload)
     boundary = response.json()["boundaries"][0]
-    assert boundary == {"boundary_index": 0, "cleaned": False, "residue_cleared": False}
+    assert boundary == {
+        "boundary_index": 0,
+        "cleaned": False,
+        "residue_cleared": False,
+        "cleared_targets": [],
+    }
     assert response.json()["batches"][1]["incoming_residue"] == [item("milk", 0, "A")]
 
 
@@ -172,6 +192,144 @@ def test_cleaning_only_clears_residue_at_that_boundary_later_introduction_remain
     assert batches[3]["carried_over"] == [item("milk", 2, "C")]
 
 
+# ---------------------------------------------------------------------------
+# 局部清洁：仅移除指定已清除目标，保留项继续携带最近来源
+# ---------------------------------------------------------------------------
+
+
+def test_partial_cleaning_removes_peanut_but_keeps_milk_carrying_its_source() -> None:
+    # A 同时留下牛奶与花生；A/B 之间仅验证清除花生：
+    # B 的进入残留只有牛奶，花生不得继续带入；牛奶来源仍指向 A
+    payload = make_request(
+        [
+            make_batch("A", contains_milk=True, contains_peanut=True),
+            make_batch("B"),
+            make_batch("C"),
+        ],
+        cleaned=[False, False],
+        cleared=[["peanut"], None],
+    )
+    response = post_changeover(payload)
+    assert response.status_code == 200
+    batches = response.json()["batches"]
+    boundary = response.json()["boundaries"][0]
+
+    assert batches[1]["incoming_residue"] == [item("milk", 0, "A")]
+    assert batches[1]["carried_over"] == [item("milk", 0, "A")]
+    assert batches[1]["outgoing_residue"] == [item("milk", 0, "A")]
+    # 局部清洁不是全部清洁：cleaned_before 仍为 false
+    assert batches[1]["cleaned_before"] is False
+    # 牛奶保留最近来源继续携带到第三批
+    assert batches[2]["incoming_residue"] == [item("milk", 0, "A")]
+
+    assert boundary == {
+        "boundary_index": 0,
+        "cleaned": False,
+        "residue_cleared": False,
+        "cleared_targets": ["peanut"],
+    }
+    # 未指定清除目标的边界保持空清除列表
+    assert response.json()["boundaries"][1]["cleared_targets"] == []
+
+
+def test_partial_cleaning_keeps_other_targets_union_with_direct_ingredients() -> None:
+    # A 留下花生/小麦；边界仅清除花生；B 直接含牛奶：
+    # B 离开残留 = 保留的小麦 ∪ 本批牛奶，各自保留最近来源
+    payload = make_request(
+        [
+            make_batch("A", contains_peanut=True, contains_wheat=True),
+            make_batch("B", contains_milk=True),
+        ],
+        cleaned=[False],
+        cleared=[["peanut"]],
+    )
+    response = post_changeover(payload)
+    batches = response.json()["batches"]
+    assert batches[1]["incoming_residue"] == [item("wheat", 0, "A")]
+    assert batches[1]["carried_over"] == [item("wheat", 0, "A")]
+    assert batches[1]["outgoing_residue"] == [
+        item("milk", 1, "B"),
+        item("wheat", 0, "A"),
+    ]
+
+
+def test_partial_cleaning_multiple_targets_reported_in_fixed_order() -> None:
+    # 指定顺序乱序不影响响应的固定目标顺序
+    payload = make_request(
+        [
+            make_batch("A", contains_milk=True, contains_peanut=True, contains_wheat=True),
+            make_batch("B"),
+        ],
+        cleaned=[False],
+        cleared=[["wheat", "milk"]],
+    )
+    response = post_changeover(payload)
+    boundary = response.json()["boundaries"][0]
+    assert boundary["cleared_targets"] == ["milk", "wheat"]
+    assert boundary["residue_cleared"] is False
+    # 仅花生继续带入
+    assert response.json()["batches"][1]["incoming_residue"] == [item("peanut", 0, "A")]
+
+
+def test_partial_cleaning_target_absent_from_residue_still_confirmed_in_boundary() -> None:
+    # 指定清除的目标若不在上一批离开残留中，边界结果仍确认该清除项（清洁验证已执行）
+    payload = make_request(
+        [make_batch("A", contains_milk=True), make_batch("B")],
+        cleaned=[False],
+        cleared=[["peanut", "milk"]],
+    )
+    response = post_changeover(payload)
+    assert response.status_code == 200
+    assert response.json()["boundaries"][0]["cleared_targets"] == ["milk", "peanut"]
+    assert response.json()["batches"][1]["incoming_residue"] == []
+
+
+def test_full_cleaning_without_new_field_still_zeros_everything() -> None:
+    # 全部清洁：五类清除项全部确认，下一批进入残留归零
+    payload = make_request(
+        [
+            make_batch("A", contains_milk=True, contains_peanut=True, contains_wheat=True),
+            make_batch("B"),
+        ],
+        cleaned=[True],
+    )
+    response = post_changeover(payload)
+    body = response.json()
+    assert body["batches"][1]["incoming_residue"] == []
+    assert body["batches"][1]["outgoing_residue"] == []
+    assert body["boundaries"][0] == {
+        "boundary_index": 0,
+        "cleaned": True,
+        "residue_cleared": True,
+        "cleared_targets": ["milk", "peanut", "wheat", "barley", "rye"],
+    }
+
+
+def test_legacy_request_with_only_cleaned_flag_keeps_all_or_nothing_semantics() -> None:
+    # 旧客户端只发 cleaned 布尔：true=全清，false=不清，响应正常（兼容）
+    for flag, expect_incoming in ((True, []), (False, [item("peanut", 0, "A")])):
+        legacy_payload = {
+            "batches": [make_batch("A", contains_peanut=True), make_batch("B")],
+            "boundaries": [{"cleaned": flag}],
+        }
+        response = post_changeover(legacy_payload)
+        assert response.status_code == 200
+        assert response.json()["batches"][1]["incoming_residue"] == expect_incoming
+        assert "cleared_targets" in response.json()["boundaries"][0]
+
+
+def test_explicit_null_cleared_targets_field_means_no_partial_cleaning() -> None:
+    # 显式传 null 与缺省等价：未清洁语义
+    payload = {
+        "batches": [make_batch("A", contains_peanut=True), make_batch("B")],
+        "boundaries": [{"cleaned": False, "cleared_targets": None}],
+    }
+    response = post_changeover(payload)
+    assert response.status_code == 200
+    assert response.json()["batches"][1]["incoming_residue"] == [item("peanut", 0, "A")]
+    assert response.json()["boundaries"][0]["cleared_targets"] == []
+
+
 def test_response_contract_keys_are_stable() -> None:
     response = post_changeover(
         make_request([make_batch("A", contains_barley=True), make_batch("B")])
@@ -193,7 +351,10 @@ def test_response_contract_keys_are_stable() -> None:
         "boundary_index",
         "cleaned",
         "residue_cleared",
+        "cleared_targets",
     }
+    # 未清洁边界不确认任何清除项
+    assert body["boundaries"][0]["cleared_targets"] == []
     assert set(body["batches"][1]["incoming_residue"][0].keys()) == {
         "target",
         "source_batch_index",
@@ -282,6 +443,90 @@ def test_null_cleaned_flag_returns_field_error() -> None:
     assert ("body", "boundaries", 0, "cleaned") in [
         tuple(err["loc"]) for err in response.json()["detail"]
     ]
+
+
+def test_empty_cleared_targets_returns_field_error_located_to_boundary() -> None:
+    payload = make_request(
+        [make_batch("A"), make_batch("B")],
+        cleaned=[False],
+        cleared=[[]],
+    )
+    response = post_changeover(payload)
+    assert response.status_code == 422
+    locations = [tuple(err["loc"]) for err in response.json()["detail"]]
+    assert ("body", "boundaries", 0, "cleared_targets") in locations
+    assert set(response.json().keys()) == {"detail"}  # 不产生结果
+
+
+def test_duplicate_cleared_targets_returns_field_error_located_to_boundary() -> None:
+    payload = make_request(
+        [make_batch("A"), make_batch("B")],
+        cleaned=[False],
+        cleared=[["peanut", "peanut"]],
+    )
+    response = post_changeover(payload)
+    assert response.status_code == 422
+    locations = [tuple(err["loc"]) for err in response.json()["detail"]]
+    assert ("body", "boundaries", 0, "cleared_targets") in locations
+    assert "重复" in response.json()["detail"][0]["msg"]
+
+
+def test_cleared_target_outside_five_allergens_returns_field_error() -> None:
+    # 枚举白名单由 Pydantic 拦截，loc 精确定位到越界项所在边界字段
+    payload = make_request(
+        [make_batch("A"), make_batch("B")],
+        cleaned=[False],
+        cleared=[["soy"]],
+    )
+    response = post_changeover(payload)
+    assert response.status_code == 422
+    locations = [tuple(err["loc"]) for err in response.json()["detail"]]
+    assert ("body", "boundaries", 0, "cleared_targets", 0) in locations
+
+
+def test_non_string_cleared_target_returns_field_error_located_to_boundary() -> None:
+    payload = make_request(
+        [make_batch("A"), make_batch("B")],
+        cleaned=[False],
+        cleared=[[1]],
+    )
+    response = post_changeover(payload)
+    assert response.status_code == 422
+    locations = [tuple(err["loc"]) for err in response.json()["detail"]]
+    assert ("body", "boundaries", 0, "cleared_targets", 0) in locations
+
+
+def test_cleared_targets_conflicting_with_full_cleaning_returns_field_error() -> None:
+    payload = make_request(
+        [make_batch("A"), make_batch("B")],
+        cleaned=[True],
+        cleared=[["peanut"]],
+    )
+    response = post_changeover(payload)
+    assert response.status_code == 422
+    locations = [tuple(err["loc"]) for err in response.json()["detail"]]
+    assert ("body", "boundaries", 0, "cleared_targets") in locations
+    assert "冲突" in response.json()["detail"][0]["msg"]
+    assert set(response.json().keys()) == {"detail"}
+
+
+def test_partial_cleaning_errors_are_located_independently_per_boundary() -> None:
+    # 三条边界各自非法时分别定位，不产生结果
+    payload = {
+        "batches": [make_batch("A"), make_batch("B"), make_batch("C"), make_batch("D")],
+        "boundaries": [
+            {"cleaned": False, "cleared_targets": []},
+            {"cleaned": False, "cleared_targets": ["wheat", "wheat"]},
+            {"cleaned": True, "cleared_targets": ["milk"]},
+        ],
+    }
+    response = post_changeover(payload)
+    assert response.status_code == 422
+    locations = [tuple(err["loc"]) for err in response.json()["detail"]]
+    assert ("body", "boundaries", 0, "cleared_targets") in locations
+    assert ("body", "boundaries", 1, "cleared_targets") in locations
+    assert ("body", "boundaries", 2, "cleared_targets") in locations
+    assert set(response.json().keys()) == {"detail"}
 
 
 def test_non_boolean_direct_ingredient_flag_returns_field_error_located_to_batch() -> None:

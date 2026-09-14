@@ -53,8 +53,10 @@ def compare_plans(request: CompareRequest) -> CompareResponse:
 def changeover(request: ChangeoverRequest) -> ChangeoverResponse:
     """换线残留推演：按生产批次序列逐批给出进入残留、前序带入与离开残留。
 
-    经验证清洁在下一批开始前清空残留；批次数量不足、名称空白或重复、
-    清洁边界缺失/长度不符、成分标记非布尔均返回 422 字段级错误，
-    loc 定位到具体批次或边界，且不产生推演结果。
+    边界支持未清洁、全部清洁或指定已清除目标的局部清洁；局部清洁仅移除
+    指定目标，保留项继续携带最近来源。批次数量不足、名称空白或重复、
+    清洁边界缺失/长度不符、成分标记非布尔、清除目标为空/重复/越界/
+    与全部清洁冲突均返回 422 字段级错误，loc 定位到具体批次或边界，
+    且不产生推演结果。
     """
     return simulate(request)

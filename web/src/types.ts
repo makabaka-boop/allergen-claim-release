@@ -118,9 +118,19 @@ export interface BatchInput {
   contains_rye: boolean;
 }
 
+// 清洁边界三选一：未清洁 / 全部清洁 / 局部清洁（指定已清除目标）
+export const CLEANING_MODES = ["uncleaned", "full", "partial"] as const;
+export type CleaningMode = (typeof CLEANING_MODES)[number];
+
+export interface CleaningBoundaryInput {
+  cleaned: boolean;
+  // 仅局部清洁时提供：进入下一批前已验证清除的目标（缺省=沿用 cleaned 全清/不清语义）
+  cleared_targets?: Target[];
+}
+
 export interface ChangeoverPayload {
   batches: BatchInput[];
-  boundaries: { cleaned: boolean }[];
+  boundaries: CleaningBoundaryInput[];
 }
 
 export interface ResidueItem {
@@ -133,6 +143,8 @@ export interface CleaningBoundaryReport {
   boundary_index: number;
   cleaned: boolean;
   residue_cleared: boolean;
+  // 该边界实际执行的清除目标：全部清洁=五类全列；局部清洁=指定目标；未清洁=[]
+  cleared_targets: Target[];
 }
 
 export interface BatchResidueReport {

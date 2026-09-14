@@ -156,14 +156,29 @@ class BatchInput(BaseModel):
 
 
 class CleaningBoundary(BaseModel):
-    """相邻批次之间的清洁边界：标记进入下一批前是否完成经验证清洁。
+    """相邻批次之间的清洁边界（边界 i 位于批次 i 与批次 i+1 之间）。
 
-    经验证清洁会在下一批开始前清空全部残留；未清洁则残留继续带入。
+    三种清洁选择：
+
+    - ``cleaned=true``（且不给 ``cleared_targets``）：完成经验证的**全部清洁**，
+      下一批开始前清空全部残留；
+    - ``cleaned=false`` 且 ``cleared_targets`` 为非空的合法目标列表：
+      **局部清洁**，进入下一批前仅移除指定目标，其余残留继续携带；
+    - ``cleaned=false`` 且不提供 ``cleared_targets``：未清洁，残留原样带入。
+
+    旧请求仅含 ``cleaned`` 布尔时保持原有全清/不清语义。
+    ``cleared_targets`` 为空列表、含重复项、含五类以外取值，或与
+    ``cleaned=true`` 同时出现，均为边界字段级错误（见 changeover.validate_sequence）。
     """
 
     model_config = {"extra": "forbid"}
 
-    cleaned: bool = Field(..., strict=True, description="true=已完成经验证清洁，下一批从零开始")
+    cleaned: bool = Field(..., strict=True, description="true=已完成全部经验证清洁，下一批从零开始")
+    cleared_targets: list[Target] | None = Field(
+        default=None,
+        description="局部清洁：进入下一批前仅移除这些已验证清除的目标；"
+        "缺省表示不指定清除目标（沿用 cleaned 的全清/不清语义）",
+    )
 
 
 class ChangeoverRequest(BaseModel):
@@ -173,6 +188,9 @@ class ChangeoverRequest(BaseModel):
     合法长度固定为 len(batches) - 1。名称去空白后不得重复。
     批次数量不足/名称空白或重复/边界缺失或长度不符/成分标记非布尔，
     均返回定位到具体批次或边界的字段级错误，且不产生推演结果。
+
+    边界支持局部清洁：boundaries[i].cleared_targets 可选，列出进入下一批前
+    已验证清除的目标；与 cleaned=true 冲突、为空、重复或超出五类范围均拒绝。
     """
 
     model_config = {"extra": "forbid"}
@@ -195,9 +213,14 @@ class CleaningBoundaryReport(BaseModel):
     """相邻批次间清洁边界的推演结果（边界 i 位于批次 i 与批次 i+1 之间）。"""
 
     boundary_index: int = Field(..., ge=0)
-    cleaned: bool = Field(..., description="用户标记：是否完成经验证清洁")
+    cleaned: bool = Field(..., description="用户标记：是否完成全部经验证清洁")
     residue_cleared: bool = Field(
-        ..., description="true 表示该边界经验证清洁，离开残留未继续带入下一批"
+        ..., description="true 表示该边界经验证全部清洁，离开残留未继续带入下一批"
+    )
+    cleared_targets: list[Target] = Field(
+        ...,
+        description="该边界实际执行的清除目标：全部清洁为五类全列；"
+        "局部清洁为指定的已清除目标；未清洁为空列表",
     )
 
 
@@ -222,9 +245,10 @@ class BatchResidueReport(BaseModel):
         description="离开残留：未清洁时为进入残留与本批直接成分的并集"
         "（每项保留最近来源批次）；首项前若已清洁则为空",
     )
-    # 本批开始前的清洁边界（第 0 批之前没有边界，为 null）
+    # 本批开始前的清洁边界（第 0 批之前没有边界，为 null）。
+    # 局部清洁不是全部清洁，此处仍为 false；实际清除项见 boundaries[i].cleared_targets。
     cleaned_before: bool | None = Field(
-        ..., description="上一条边界是否经验证清洁；第 0 批为 null"
+        ..., description="上一条边界是否经验证全部清洁；第 0 批为 null，局部清洁为 false"
     )
 
 
