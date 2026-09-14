@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { ApiError, simulateChangeover } from "../api";
 import { ErrorSummary } from "./ErrorSummary";
 import {
@@ -37,7 +37,7 @@ function validateSequence(batches: BatchInput[], boundaries: BoundaryState[]): F
     });
   }
 
-  const seen = new Map<string, number>();
+  const namePositions = new Map<string, number[]>();
   batches.forEach((batch, index) => {
     const trimmed = batch.name.trim();
     if (!trimmed) {
@@ -47,14 +47,28 @@ function validateSequence(batches: BatchInput[], boundaries: BoundaryState[]): F
       });
       return;
     }
-    if (seen.has(trimmed)) {
-      errors.push({
-        field: `batches[${index}].name`,
-        message: `批次名称与第 ${(seen.get(trimmed) ?? 0) + 1} 批重复：生产批次序列内名称不得重复。`,
-      });
-    } else {
-      seen.set(trimmed, index);
-    }
+    const positions = namePositions.get(trimmed) ?? [];
+    positions.push(index);
+    namePositions.set(trimmed, positions);
+  });
+
+  // 所有参与重复的批次（含首次出现者）各自定位报错
+  namePositions.forEach((positions) => {
+    if (positions.length < 2) return;
+    positions.forEach((batchIndex, order) => {
+      if (order === 0) {
+        const others = positions.slice(1).map((pos) => `第 ${pos + 1} 批`).join("、");
+        errors.push({
+          field: `batches[${batchIndex}].name`,
+          message: `批次名称与${others}重复：生产批次序列内名称不得重复。`,
+        });
+      } else {
+        errors.push({
+          field: `batches[${batchIndex}].name`,
+          message: `批次名称与第 ${positions[0] + 1} 批重复：生产批次序列内名称不得重复。`,
+        });
+      }
+    });
   });
 
   // UI 恒定维护 len(batches)-1 条边界；局部清洁必须至少选定一个清除目标
@@ -206,12 +220,21 @@ export function ChangeoverPanel() {
   const [fieldErrors, setFieldErrors] = useState<FieldError[]>([]);
   const [transportError, setTransportError] = useState("");
   const [submitting, setSubmitting] = useState(false);
+  // 编辑代号：每次编辑（使旧结果失效）或发起推演时递增。
+  // 推演请求返回时若代号已落后（等待期间又改过批次成分/边界，或已发起新推演），
+  // 该响应属于陈旧输入，必须整体丢弃，避免旧输入对应的残留结果重新显示、
+  // 与当前编辑序列不一致。
+  const generationRef = useRef(0);
 
-  // 任何编辑都会使上一轮推演失效：保留全部输入，清除旧结果与提示，等待重新推演
+  // 任何编辑都会使上一轮推演失效：保留全部输入，清除旧结果与提示，等待重新推演。
+  // 同时递增编辑代号，使任何在途的旧推演响应（成功或 422）在返回时作废；
+  // 在途请求既然已作废，其 finally 不会再复位提交态，这里立即复位。
   const invalidate = () => {
+    generationRef.current += 1;
     setResult(null);
     setFieldErrors([]);
     setTransportError("");
+    setSubmitting(false);
   };
 
   const updateBatch = (index: number, patch: Partial<BatchInput>) => {
@@ -249,6 +272,17 @@ export function ChangeoverPanel() {
       [next[index], next[target]] = [next[target], next[index]];
       return next;
     });
+    // 边界按“相邻间隙”对齐。交换相邻两批后，受影响的是这对批次之间以及
+    // 它们与外侧邻居之间的间隙（共至多三条）：这些间隙的相邻关系都已改变，
+    // 原先针对旧批次关系的清洁选择不得沿用到新间隙（否则重新推演会按错误
+    // 的清洁选择清除残留），一律保守重置为未清洁，由用户按新相邻关系重新标记。
+    const first = Math.min(index, target);
+    const last = Math.max(index, target);
+    setBoundaries((current) =>
+      current.map((boundary, gapIndex) =>
+        gapIndex >= first - 1 && gapIndex <= last ? emptyBoundary() : boundary,
+      ),
+    );
     invalidate();
   };
 
@@ -300,6 +334,10 @@ export function ChangeoverPanel() {
       return;
     }
 
+    // 本次推演占据最新代号：此前在途的响应（若有）返回时一律丢弃；
+    // 等待期间一旦发生编辑，invalidate 会再递增代号，本响应同样作废。
+    generationRef.current += 1;
+    const requestGeneration = generationRef.current;
     setFieldErrors([]);
     setSubmitting(true);
     try {
@@ -314,15 +352,20 @@ export function ChangeoverPanel() {
         batches,
         boundaries: payloadBoundaries,
       });
+      // 等待期间批次成分/边界已被修改或已发起新推演：该响应对应旧输入，丢弃
+      if (generationRef.current !== requestGeneration) return;
       setResult(response);
     } catch (error) {
+      if (generationRef.current !== requestGeneration) return;
       if (error instanceof ApiError) {
         setFieldErrors(error.fieldErrors);
       } else {
         setTransportError((error as Error).message);
       }
     } finally {
-      setSubmitting(false);
+      if (generationRef.current === requestGeneration) {
+        setSubmitting(false);
+      }
     }
   };
 

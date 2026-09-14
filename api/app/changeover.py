@@ -61,22 +61,29 @@ def validate_sequence(request: ChangeoverRequest) -> None:
             )
         )
 
-    # 名称去空白后判重，所有参与重复的批次各自定位报错
-    seen_names: dict[str, int] = {}
-    duplicated: dict[int, int] = {}  # 当前批次序号 -> 首次出现的批次序号
+    # 名称去空白后判重，所有参与重复的批次（含首次出现者）各自定位报错
+    name_positions: dict[str, list[int]] = {}
     for index, batch in enumerate(request.batches):
-        stripped = batch.name.strip()
-        if stripped in seen_names:
-            duplicated[index] = seen_names[stripped]
-        else:
-            seen_names[stripped] = index
-    for index, first_index in duplicated.items():
-        errors.append(
-            _field_error(
-                ("batches", index, "name"),
-                f"批次名称与第 {first_index + 1} 批重复：生产批次序列内名称不得重复",
+        name_positions.setdefault(batch.name.strip(), []).append(index)
+    for positions in name_positions.values():
+        if len(positions) < 2:
+            continue
+        for order, index in enumerate(positions):
+            others = [pos + 1 for pos in positions if pos != index]
+            if order == 0:
+                other_text = "、".join(f"第 {pos} 批" for pos in others)
+                message = (
+                    f"批次名称与{other_text}重复：生产批次序列内名称不得重复"
+                )
+            else:
+                first_index = positions[0]
+                message = (
+                    f"批次名称与第 {first_index + 1} 批重复："
+                    "生产批次序列内名称不得重复"
+                )
+            errors.append(
+                _field_error(("batches", index, "name"), message)
             )
-        )
 
     expected_boundaries = max(len(request.batches) - 1, 0)
     if len(request.boundaries) != expected_boundaries:

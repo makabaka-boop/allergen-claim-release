@@ -356,7 +356,7 @@ describe("换线残留推演：字段错误保留输入并可修正后再次提�
     expect(calls).toHaveLength(1);
   });
 
-  it("批次名称重复：定位到具体批次，改名后再次提交成功", async () => {
+  it("批次名称重复：每个参与重复的批次（含首个）都定位提示，改名后再次提交成功", async () => {
     const { calls, fetchMock } = mockSimulation();
     const user = userEvent.setup();
     render(<ChangeoverPanel />);
@@ -365,9 +365,13 @@ describe("换线残留推演：字段错误保留输入并可修正后再次提�
     await user.type(screen.getByTestId("co-batch-1-name"), "同名");
     await user.click(screen.getByTestId("co-submit"));
 
+    // 两个批次都参与重复：首个批次同样获得字段提示，不能只标记后者
     await waitFor(() =>
-      expect(screen.getByTestId("co-field-error-0")).toHaveTextContent("与第 1 批重复"),
+      expect(screen.getByTestId("co-field-error-0")).toHaveTextContent("第 1 批批次名称"),
     );
+    expect(screen.getByTestId("co-field-error-0")).toHaveTextContent("与第 2 批重复");
+    expect(screen.getByTestId("co-field-error-1")).toHaveTextContent("第 2 批批次名称");
+    expect(screen.getByTestId("co-field-error-1")).toHaveTextContent("与第 1 批重复");
     expect(fetchMock).not.toHaveBeenCalled();
 
     await user.clear(screen.getByTestId("co-batch-1-name"));
@@ -375,6 +379,27 @@ describe("换线残留推演：字段错误保留输入并可修正后再次提�
     await user.click(screen.getByTestId("co-submit"));
     await waitFor(() => expect(screen.getByTestId("co-result")).toBeInTheDocument());
     expect(calls).toHaveLength(1);
+  });
+
+  it("三个同名批次：首个与后两个一样获得重复名称字段提示", async () => {
+    const { fetchMock } = mockSimulation();
+    const user = userEvent.setup();
+    render(<ChangeoverPanel />);
+
+    await user.click(screen.getByTestId("co-add-batch"));
+    await user.type(screen.getByTestId("co-batch-0-name"), "同名");
+    await user.type(screen.getByTestId("co-batch-1-name"), "同名");
+    await user.type(screen.getByTestId("co-batch-2-name"), "同名");
+    await user.click(screen.getByTestId("co-submit"));
+
+    await waitFor(() =>
+      expect(screen.getByTestId("co-field-error-0")).toHaveTextContent("第 1 批批次名称"),
+    );
+    expect(screen.getByTestId("co-field-error-0")).toHaveTextContent("与第 2 批、第 3 批重复");
+    expect(screen.getByTestId("co-field-error-1")).toHaveTextContent("与第 1 批重复");
+    expect(screen.getByTestId("co-field-error-2")).toHaveTextContent("与第 1 批重复");
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(screen.queryByTestId("co-result")).not.toBeInTheDocument();
   });
 
   it("后端 422：按批次/边界定位显示，输入保留，修正后再次提交", async () => {
@@ -499,6 +524,39 @@ describe("换线残留推演：字段错误保留输入并可修正后再次提�
 });
 
 describe("换线残留推演：调整顺序后重新推演", () => {
+  it("交换相邻批次后，针对旧批次关系的局部清洁选择不沿用到新间隙", async () => {
+    const { calls } = mockSimulation();
+    const user = userEvent.setup();
+    render(<ChangeoverPanel />);
+
+    await user.type(screen.getByTestId("co-batch-0-name"), "花生酱A");
+    await user.click(screen.getByTestId("co-batch-0-contains-peanut"));
+    await user.type(screen.getByTestId("co-batch-1-name"), "燕麦B");
+    // 针对旧关系“A → B”设置局部清洁（仅清除花生）
+    await user.click(screen.getByTestId("co-boundary-0-mode-partial"));
+    await user.click(screen.getByTestId("co-boundary-0-target-peanut"));
+
+    // 交换两批：新间隙是“B → A”，旧局部清洁选择必须被保守重置为未清洁
+    await user.click(screen.getByTestId("co-batch-0-down"));
+    expect(screen.getByTestId("co-boundary-0-mode-uncleaned")).toBeChecked();
+    expect(screen.getByTestId("co-boundary-0-mode-partial")).not.toBeChecked();
+    expect(screen.queryByTestId("co-boundary-0-targets")).not.toBeInTheDocument();
+
+    await user.click(screen.getByTestId("co-submit"));
+    await waitFor(() => expect(screen.getByTestId("co-result")).toBeInTheDocument());
+
+    // 重新推演按未清洁处理，载荷不得再携带旧的 cleared_targets
+    const payload = calls[0] as {
+      batches: { name: string }[];
+      boundaries: { cleaned: boolean; cleared_targets?: string[] }[];
+    };
+    expect(payload.batches.map((b) => b.name)).toEqual(["燕麦B", "花生酱A"]);
+    expect(payload.boundaries[0]).toEqual({ cleaned: false });
+    expect(payload.boundaries[0].cleared_targets).toBeUndefined();
+    // 新顺序第 2 批（花生酱A）的花生是本批直接成分，不被旧清洁选择清除
+    expect(screen.getByTestId("co-batch-1-direct")).toHaveTextContent("花生");
+  });
+
   it("下移批次会使上一轮结果失效，重新提交按新顺序推演", async () => {
     const { calls } = mockSimulation();
     const user = userEvent.setup();
@@ -575,5 +633,102 @@ describe("换线残留推演：调整顺序后重新推演", () => {
     expect(screen.getByTestId("co-batch-1-incoming")).toHaveTextContent("无");
     const payload = calls[1] as { boundaries: { cleaned: boolean }[] };
     expect(payload.boundaries[0]).toEqual({ cleaned: true });
+  });
+});
+
+describe("换线残留推演：异步结果与当前编辑序列一致", () => {
+  it("推演请求未返回时修改批次成分，先前输入对应的响应返回后不再显示", async () => {
+    // 第一次请求挂起，可由测试控制何时返回
+    let resolveFirst: ((response: Response) => void) | null = null;
+    const firstRequest = new Promise<Response>((resolve) => {
+      resolveFirst = resolve;
+    });
+    const fetchMock = vi
+      .fn()
+      .mockImplementationOnce(async () => firstRequest)
+      .mockImplementation(async () =>
+        jsonResponse(
+          buildChangeoverResponse(
+            [
+              { name: "燕麦B", direct: [] },
+              { name: "花生酱A", direct: ["peanut"] },
+            ],
+            [{ mode: "uncleaned" }],
+          ),
+        ),
+      );
+    vi.stubGlobal("fetch", fetchMock);
+    const user = userEvent.setup();
+    render(<ChangeoverPanel />);
+
+    // 旧输入：花生在第 1 批
+    await user.type(screen.getByTestId("co-batch-0-name"), "花生酱A");
+    await user.click(screen.getByTestId("co-batch-0-contains-peanut"));
+    await user.type(screen.getByTestId("co-batch-1-name"), "燕麦B");
+    await user.click(screen.getByTestId("co-submit"));
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+
+    // 响应未返回时交换批次顺序：当前编辑序列变成 燕麦B → 花生酱A
+    await user.click(screen.getByTestId("co-batch-0-down"));
+    expect(screen.getByTestId("co-batch-0-name")).toHaveValue("燕麦B");
+    expect(screen.queryByTestId("co-result")).not.toBeInTheDocument();
+
+    // 先前输入（花生在首批）对应的响应此时才返回：必须被丢弃
+    resolveFirst!(
+      jsonResponse(
+        buildChangeoverResponse(
+          [
+            { name: "花生酱A", direct: ["peanut"] },
+            { name: "燕麦B", direct: [] },
+          ],
+          [{ mode: "uncleaned" }],
+        ),
+      ),
+    );
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(screen.queryByTestId("co-result")).not.toBeInTheDocument();
+
+    // 按当前编辑序列重新推演，结果与页面一致
+    await user.click(screen.getByTestId("co-submit"));
+    await waitFor(() => expect(screen.getByTestId("co-result")).toBeInTheDocument());
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    // 首批是干净的燕麦B：无离开残留；花生只出现在第 2 批自己的直接成分
+    expect(screen.getByTestId("co-batch-0-outgoing")).toHaveTextContent("无");
+    expect(screen.getByTestId("co-batch-1-direct")).toHaveTextContent("花生");
+  });
+
+  it("推演请求未返回时修改批次成分，先前输入对应的 422 响应返回后也不再提示", async () => {
+    let resolveFirst: ((response: Response) => void) | null = null;
+    const firstRequest = new Promise<Response>((resolve) => {
+      resolveFirst = resolve;
+    });
+    const fetchMock = vi.fn(async () => firstRequest);
+    vi.stubGlobal("fetch", fetchMock);
+    const user = userEvent.setup();
+    render(<ChangeoverPanel />);
+
+    await user.type(screen.getByTestId("co-batch-0-name"), "A批");
+    await user.type(screen.getByTestId("co-batch-1-name"), "B批");
+    await user.click(screen.getByTestId("co-submit"));
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+
+    // 等待期间编辑批次：旧 422 返回时必须作废
+    await user.click(screen.getByTestId("co-batch-0-contains-peanut"));
+    resolveFirst!(
+      jsonResponse(
+        {
+          detail: [
+            {
+              loc: ["body", "boundaries", 0, "cleared_targets"],
+              msg: "旧输入的字段错误，不应再显示",
+              type: "value_error",
+            },
+          ],
+        },
+        422,
+      ),
+    );
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(screen.queryByTestId("co-field-error-0")).not.toBeInTheDocument();
   });
 });

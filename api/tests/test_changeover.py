@@ -394,13 +394,27 @@ def test_blank_batch_name_returns_field_error_located_to_batch() -> None:
 
 def test_duplicate_batch_names_return_field_error_located_to_each_duplicate() -> None:
     response = post_changeover(
-        make_request([make_batch("同一名称"), make_batch("B"), make_batch(" 同一名称 ")])
+        make_request(
+            [make_batch("同一名称"), make_batch(" 同一名称 "), make_batch("同一名称")]
+        )
     )
     assert response.status_code == 422
     locations = [tuple(err["loc"]) for err in response.json()["detail"]]
-    # 第二个重复批次定位到自身 name；首个出现的批次不报错
+    # 三个同名批次都参与重复：首个出现者与后两个一样各自定位到自身 name
+    assert ("body", "batches", 0, "name") in locations
+    assert ("body", "batches", 1, "name") in locations
     assert ("body", "batches", 2, "name") in locations
-    assert ("body", "batches", 0, "name") not in locations
+    assert set(response.json().keys()) == {"detail"}  # 不产生结果
+
+
+def test_two_duplicate_batch_names_both_located() -> None:
+    response = post_changeover(
+        make_request([make_batch("同名"), make_batch("同名")])
+    )
+    assert response.status_code == 422
+    locations = [tuple(err["loc"]) for err in response.json()["detail"]]
+    assert ("body", "batches", 0, "name") in locations
+    assert ("body", "batches", 1, "name") in locations
 
 
 def test_missing_cleaning_boundaries_returns_field_error() -> None:
